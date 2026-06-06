@@ -1,0 +1,359 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 222 47% 11%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+    /* Brand primary — refined indigo-violet that anchors the amber→pink→violet
+       →indigo brand gradient. Replaces the old generic blue app-wide. */
+    --primary: 243 75% 58%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 240 30% 96%;
+    --secondary-foreground: 243 30% 18%;
+    --muted: 240 24% 96%;
+    --muted-foreground: 240 8% 46%;
+    /* Accent carries a faint brand-violet tint so hover states feel cohesive */
+    --accent: 250 45% 95%;
+    --accent-foreground: 243 40% 24%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 240 24% 90%;
+    --input: 240 24% 90%;
+    --ring: 252 83% 62%;
+    --radius: 0.75rem;
+
+    --learn: 199 89% 48%;
+    --research: 258 90% 66%;
+    --develop: 38 92% 50%;
+
+    /* ── Brand palette (the hero/logo gradient stops) ──────────────── */
+    --brand-amber: 41 96% 56%;     /* #FBBF24 */
+    --brand-pink: 327 68% 69%;     /* #E879B0 */
+    --brand-violet: 271 91% 65%;   /* #A855F7 */
+    --brand-indigo: 239 84% 67%;   /* #6366F1 */
+    --brand-gradient: linear-gradient(
+      135deg,
+      hsl(var(--brand-amber)) 0%,
+      hsl(var(--brand-pink)) 30%,
+      hsl(var(--brand-violet)) 65%,
+      hsl(var(--brand-indigo)) 100%
+    );
+
+    /* Hero section tokens — always dark regardless of app theme */
+    --hero-bg: 260 87% 3%;
+    --hero-fg: 40 6% 95%;
+    --hero-sub: 40 6% 82%;
+  }
+
+  .dark {
+    --background: 240 32% 6%;
+    --foreground: 210 40% 98%;
+    --card: 240 30% 9%;
+    --card-foreground: 210 40% 98%;
+    --popover: 240 32% 7%;
+    --popover-foreground: 210 40% 98%;
+    /* Brighter brand indigo-violet for dark surfaces (keeps white text legible) */
+    --primary: 250 89% 66%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 243 28% 17%;
+    --secondary-foreground: 210 40% 98%;
+    --muted: 240 24% 14%;
+    --muted-foreground: 240 14% 66%;
+    --accent: 246 32% 19%;
+    --accent-foreground: 210 40% 98%;
+    --destructive: 0 63% 50%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 243 24% 19%;
+    --input: 243 24% 19%;
+    --ring: 252 95% 74%;
+
+    --learn: 199 89% 55%;
+    --research: 258 90% 70%;
+    --develop: 38 92% 60%;
+
+    /* Brand palette — slightly brighter in dark mode for luminosity */
+    --brand-amber: 41 96% 60%;
+    --brand-pink: 327 75% 72%;
+    --brand-violet: 271 95% 70%;
+    --brand-indigo: 239 90% 72%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  html {
+    scroll-behavior: smooth;
+  }
+  /* Global overflow firewall — `clip` (not `hidden`) prevents any stray
+     decorative/absolute element from ballooning the mobile layout viewport,
+     while keeping sticky/fixed positioning intact. Never produces a horizontal
+     scrollbar on any device width. */
+  html,
+  body {
+    overflow-x: clip;
+    max-width: 100%;
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family: "Geist Sans", system-ui, -apple-system, sans-serif;
+    font-feature-settings: "rlig" 1, "calt" 1;
+  }
+  ::selection {
+    @apply bg-primary/25;
+  }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    border-radius: 9999px;
+    background: hsl(var(--border));
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    /* brand-tinted thumb on hover */
+    background: linear-gradient(hsl(var(--brand-violet)), hsl(var(--brand-indigo)));
+    background-clip: padding-box;
+  }
+  /* Firefox */
+  * {
+    scrollbar-color: hsl(var(--border)) transparent;
+  }
+}
+
+@layer utilities {
+  .gradient-text {
+    @apply bg-gradient-to-r from-sky-500 via-violet-500 to-amber-500 bg-clip-text text-transparent;
+  }
+  .gradient-text-blue {
+    @apply bg-gradient-to-r from-blue-600 via-indigo-600 to-violet-600 bg-clip-text text-transparent;
+  }
+  .glass {
+    @apply bg-background/60 backdrop-blur-xl border border-border/50;
+  }
+  .glow {
+    box-shadow: 0 0 80px -20px hsl(var(--primary) / 0.5);
+  }
+  .grid-bg {
+    background-image:
+      linear-gradient(to right, hsl(var(--border) / 0.4) 1px, transparent 1px),
+      linear-gradient(to bottom, hsl(var(--border) / 0.4) 1px, transparent 1px);
+    background-size: 32px 32px;
+    mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, black, transparent);
+  }
+  .shimmer-text {
+    background: linear-gradient(
+      110deg,
+      hsl(var(--foreground)) 40%,
+      hsl(var(--primary)) 50%,
+      hsl(var(--foreground)) 60%
+    );
+    background-size: 200% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    animation: shimmer 3s linear infinite;
+  }
+
+}
+
+/* ── Fluid type scale ────────────────────────────────────────────────
+   Viewport-relative headings that shrink gracefully on phones and cap on
+   desktop. Plain CSS (not @layer) so they're always available as opt-in
+   utilities and never purged. Apply per-heading where mobile sizing is tight. */
+.text-fluid-display { font-size: clamp(2.5rem, 7vw + 1rem, 5.5rem); line-height: 1.05; letter-spacing: -0.02em; }
+.text-fluid-h1 { font-size: clamp(1.875rem, 4vw + 1rem, 3.75rem); line-height: 1.1; letter-spacing: -0.02em; }
+.text-fluid-h2 { font-size: clamp(1.5rem, 2.5vw + 0.75rem, 2.75rem); line-height: 1.15; letter-spacing: -0.015em; }
+.text-fluid-h3 { font-size: clamp(1.25rem, 1.5vw + 0.6rem, 1.875rem); line-height: 1.2; }
+.text-fluid-lead { font-size: clamp(1rem, 1vw + 0.6rem, 1.25rem); line-height: 1.6; }
+
+/* ── Brand utility suite ─────────────────────────────────────────────
+   Reusable, theme-aware helpers built on the brand palette CSS vars.
+   Plain CSS so they're always available and never purged. */
+
+/* Solid brand gradient background */
+.brand-gradient {
+  background-image: var(--brand-gradient);
+}
+
+/* Brand gradient text (matches the hero "LLM" treatment) */
+.brand-text {
+  background-image: var(--brand-gradient);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
+
+/* Animated brand gradient text — slow sheen drift */
+.brand-text-animated {
+  background-image: var(--brand-gradient);
+  background-size: 250% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  animation: gradient-x 6s ease infinite;
+}
+
+/* Soft brand glow halo */
+.glow-brand {
+  box-shadow: 0 8px 40px -8px hsl(var(--brand-violet) / 0.45);
+}
+
+/* Day/night aware glass surface */
+.glass-card {
+  background: hsl(var(--card) / 0.7);
+  backdrop-filter: blur(16px) saturate(160%);
+  -webkit-backdrop-filter: blur(16px) saturate(160%);
+  border: 1px solid hsl(var(--border) / 0.7);
+}
+
+/* Gradient hairline border via mask (no layout shift) */
+.brand-border {
+  position: relative;
+}
+.brand-border::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: var(--brand-gradient);
+  -webkit-mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+  opacity: 0.55;
+}
+
+/* Brand focus ring helper for custom interactive elements */
+.focus-brand:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px hsl(var(--background)), 0 0 0 4px hsl(var(--ring) / 0.7);
+}
+
+/* Premium card lift — opt-in on cards/tiles for a dynamic hover feel */
+.card-hover {
+  transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1),
+              box-shadow 0.25s ease,
+              border-color 0.25s ease;
+}
+.card-hover:hover {
+  transform: translateY(-3px);
+  border-color: hsl(var(--primary) / 0.35);
+  box-shadow:
+    0 12px 32px -14px hsl(var(--brand-violet) / 0.30),
+    0 0 0 1px hsl(var(--primary) / 0.08);
+}
+@media (prefers-reduced-motion: reduce) {
+  .card-hover:hover { transform: none; }
+}
+
+/* ── Touch ergonomics ─────────────────────────────────────────────────
+   On coarse pointers (phones/tablets) guarantee a 44px tap target without
+   affecting mouse/desktop layouts or inline text links. Desktop icon buttons
+   keep their exact current size. Only `min-height` is set on generic buttons,
+   so it never forces horizontal overflow; `.tap-target` opts an icon button
+   into a square 44px hit area on touch only. */
+@media (pointer: coarse) {
+  button:not(:disabled),
+  [role="button"],
+  [role="tab"] {
+    min-height: 44px;
+  }
+  .tap-target {
+    min-height: 44px;
+    min-width: 44px;
+  }
+}
+
+/* ── Reduced motion ───────────────────────────────────────────────────
+   Honour the OS "reduce motion" setting: neutralise long/looping CSS
+   animations and smooth-scroll. Framer Motion reads this flag separately
+   (handled in JS), this covers CSS-driven motion (marquees, pulses). */
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ── Liquid Glass ─────────────────────────────────────────────────── */
+.liquid-glass {
+  background: rgba(255, 255, 255, 0.01);
+  background-blend-mode: luminosity;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  border: none;
+  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.1);
+  position: relative;
+  overflow: hidden;
+}
+.liquid-glass::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1.4px;
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.45) 0%,
+    rgba(255, 255, 255, 0.15) 20%,
+    rgba(255, 255, 255, 0) 40%,
+    rgba(255, 255, 255, 0) 60%,
+    rgba(255, 255, 255, 0.15) 80%,
+    rgba(255, 255, 255, 0.45) 100%
+  );
+  -webkit-mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+}
+
+/* ── Animated gradient text (used by hero headline "LLM") ─────────── */
+@keyframes gradient-x {
+  0%, 100% { background-position: 0%   50%; }
+  50%       { background-position: 100% 50%; }
+}
+
+/* ── Hero marquee animation (20s) ─────────────────────────────────── */
+@keyframes marquee-hero {
+  0%   { transform: translateX(0%); }
+  100% { transform: translateX(-50%); }
+}
+.animate-marquee-hero {
+  animation: marquee-hero 20s linear infinite;
+}
+
+/* ── Keyframes shared ─────────────────────────────────────────────── */
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+@keyframes marquee {
+  0%   { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50%       { transform: translateY(-12px); }
+}

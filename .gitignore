@@ -1,0 +1,17 @@
+node_modules/
+.next/
+out/
+build/
+*.tsbuildinfo
+next-env.d.ts
+.env*.local
+.env
+.DS_Store
+*.log
+.vscode/
+.idea/
+# SQLite dev database
+prisma/dev.db
+prisma/*.db-journal
+# Temporary test files
+.tmp-test/

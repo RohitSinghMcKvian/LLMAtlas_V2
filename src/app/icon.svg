@@ -1,0 +1,65 @@
+<svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+
+  <!-- Deep-space brand background -->
+  <rect width="32" height="32" rx="7" fill="#0c0b18"/>
+
+  <defs>
+    <!-- Brand gradient: amber → pink → violet → indigo (bottom-left to top-right) -->
+    <linearGradient id="hg" x1="3" y1="27.3" x2="29" y2="4.7" gradientUnits="userSpaceOnUse">
+      <stop offset="0%"   stop-color="#FBBF24"/>
+      <stop offset="30%"  stop-color="#E879B0"/>
+      <stop offset="65%"  stop-color="#A855F7"/>
+      <stop offset="100%" stop-color="#6366F1"/>
+    </linearGradient>
+
+    <!-- Soft violet glow behind the hex (for HiDPI screens) -->
+    <radialGradient id="glow" cx="50%" cy="55%" r="45%">
+      <stop offset="0%"   stop-color="#A855F7" stop-opacity="0.45"/>
+      <stop offset="100%" stop-color="#6366F1" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!--
+    Flat-top regular hexagon — center (16,16), circumradius R=13
+    Vertices (clockwise from upper-left):
+      UL(9.5, 4.74)  UR(22.5, 4.74)  R(29, 16)
+      LR(22.5, 27.26)  LL(9.5, 27.26)  L(3, 16)
+    Perimeter ≈ 6 × 13 = 78 units
+  -->
+
+  <!-- Ambient glow halo -->
+  <rect width="32" height="32" rx="7" fill="url(#glow)" opacity="0.9">
+    <animate attributeName="opacity" values="0.55;0.95;0.55" dur="2.9s" repeatCount="indefinite"/>
+  </rect>
+
+  <!-- Gradient stroke hexagon (base) -->
+  <path
+    d="M 9.5 4.74 L 22.5 4.74 L 29 16 L 22.5 27.26 L 9.5 27.26 L 3 16 Z"
+    stroke="url(#hg)"
+    stroke-width="2.8"
+    stroke-linejoin="round"
+    stroke-linecap="round"
+    fill="none"
+  />
+
+  <!-- Traveling shimmer segment (SMIL animation — works in Chrome/Firefox/Safari) -->
+  <path
+    d="M 9.5 4.74 L 22.5 4.74 L 29 16 L 22.5 27.26 L 9.5 27.26 L 3 16 Z"
+    stroke="rgba(255,255,255,0.50)"
+    stroke-width="2.8"
+    stroke-linejoin="round"
+    stroke-linecap="round"
+    fill="none"
+    stroke-dasharray="6 72"
+    stroke-dashoffset="0"
+  >
+    <animate
+      attributeName="stroke-dashoffset"
+      from="0"
+      to="-78"
+      dur="3.5s"
+      repeatCount="indefinite"
+    />
+  </path>
+
+</svg>

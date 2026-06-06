@@ -1,0 +1,43 @@
+<svg width="160" height="36" viewBox="0 0 160 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Brand gradient: amber → pink → violet → indigo -->
+    <linearGradient id="hg" x1="1" y1="31" x2="33" y2="5" gradientUnits="userSpaceOnUse">
+      <stop offset="0%"   stop-color="#FBBF24"/>
+      <stop offset="30%"  stop-color="#E879B0"/>
+      <stop offset="65%"  stop-color="#A855F7"/>
+      <stop offset="100%" stop-color="#6366F1"/>
+    </linearGradient>
+
+    <!-- Wordmark gradient (matches hex accent) -->
+    <linearGradient id="tg" x1="42" y1="0" x2="160" y2="36" gradientUnits="userSpaceOnUse">
+      <stop offset="0%"   stop-color="#e2e8f0"/>
+      <stop offset="100%" stop-color="#c4b5fd"/>
+    </linearGradient>
+  </defs>
+
+  <!--
+    Flat-top hexagon — centre (17, 18), R = 14.5
+    UL(9.75, 5.45)  UR(24.25, 5.45)  R(31.5, 18)
+    LR(24.25, 30.55)  LL(9.75, 30.55)  L(2.5, 18)
+    Perimeter ≈ 6 × 14.5 = 87 units
+  -->
+  <path
+    d="M 9.75 5.45 L 24.25 5.45 L 31.5 18 L 24.25 30.55 L 9.75 30.55 L 2.5 18 Z"
+    stroke="url(#hg)"
+    stroke-width="2.8"
+    stroke-linejoin="round"
+    stroke-linecap="round"
+    fill="none"
+  />
+
+  <!-- "LLMAtlas" wordmark -->
+  <text
+    x="44"
+    y="25"
+    fill="url(#tg)"
+    font-family="'Geist Sans', system-ui, -apple-system, sans-serif"
+    font-size="17"
+    font-weight="600"
+    letter-spacing="-0.4"
+  >LLMAtlas</text>
+</svg>
