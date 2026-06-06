@@ -296,8 +296,8 @@ function ChatMessageImpl({ role, content, streaming, meta, timestamp, messageId 
                 remarkPlugins={[remarkGfm, remarkMath]}
                 rehypePlugins={[rehypeKatex, rehypeRaw]}
                 components={{
-                  // Suppress unknown HTML tags that models emit (e.g. <artifact>)
-                  artifact() { return null; },
+                  // @ts-expect-error — 'artifact' is not a standard HTML element but models may emit it
+                  artifact: () => null,
                   code({ className, children, ...rest }) {
                     return <CodeBlock className={className} {...rest}>{children}</CodeBlock>;
                   },
