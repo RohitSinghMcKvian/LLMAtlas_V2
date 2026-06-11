@@ -8,6 +8,24 @@ function getResend(): Resend {
 }
 
 const FROM = process.env.EMAIL_FROM || "LLMAtlas <noreply@llmatlas.app>"
+
+/**
+ * Safely attempt to send an email. Returns false (no throw) when
+ * RESEND_API_KEY is not configured or the send fails.
+ */
+export async function trySendEmail(fn: () => Promise<void>): Promise<boolean> {
+  if (!process.env.RESEND_API_KEY) {
+    console.warn("[EMAIL] Skipped — RESEND_API_KEY not configured")
+    return false
+  }
+  try {
+    await fn()
+    return true
+  } catch (err) {
+    console.error("[EMAIL] Send failed:", err)
+    return false
+  }
+}
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000"
 const APP_NAME = "LLMAtlas"
 

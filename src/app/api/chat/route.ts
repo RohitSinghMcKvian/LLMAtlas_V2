@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { streamChat, type ChatMessage, type ContentBlock } from "@/lib/providers";
+import { streamChat, type ChatMessage, type ContentBlock, type ToolFunction } from "@/lib/providers";
 import { findModel } from "@/lib/models";
 
 export const runtime = "nodejs";
@@ -26,6 +26,8 @@ interface Body {
   artifactMode?: boolean;
   /** Last-user-message attachments. Images become image_url blocks for vision models. */
   attachments?: AttachmentLike[];
+  /** Native function-calling tools (OpenAI format). Passed through to supported providers. */
+  tools?: ToolFunction[];
 }
 
 const ARTIFACT_PRIMER = `
@@ -116,6 +118,7 @@ export async function POST(req: NextRequest) {
       frequencyPenalty: body.frequencyPenalty,
       presencePenalty: body.presencePenalty,
       apiKey: body.apiKey,
+      tools: body.tools,
     });
 
     return new Response(stream, {

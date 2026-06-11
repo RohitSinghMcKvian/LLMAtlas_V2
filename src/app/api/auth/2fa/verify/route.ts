@@ -2,11 +2,16 @@ import { NextResponse } from "next/server"
 import { auth } from "@/lib/auth"
 import { db } from "@/lib/db"
 import { verifyTOTP, verifyBackupCode } from "@/lib/two-factor"
+import { rateLimit, rateLimitResponse } from "@/lib/rate-limit"
 
 export async function POST(req: Request) {
   try {
     const session = await auth()
     if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+
+    // Rate limit: 5 attempts per user per 15 minutes
+    const rl = rateLimit(`2fa-verify:${session.user.id}`, 5, 15 * 60 * 1000)
+    if (!rl.success) return rateLimitResponse(rl.resetAt)
 
     const { code, isBackupCode } = await req.json()
 

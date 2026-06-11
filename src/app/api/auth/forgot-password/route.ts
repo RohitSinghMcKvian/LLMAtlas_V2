@@ -2,7 +2,8 @@ import { NextResponse } from "next/server"
 import crypto from "crypto"
 import { db } from "@/lib/db"
 import { forgotPasswordSchema } from "@/lib/validations/auth"
-import { sendPasswordResetEmail } from "@/lib/email"
+import { trySendEmail, sendPasswordResetEmail } from "@/lib/email"
+import { rateLimit, getClientIP, rateLimitResponse } from "@/lib/rate-limit"
 
 export async function POST(req: Request) {
   try {
@@ -14,6 +15,15 @@ export async function POST(req: Request) {
     }
 
     const { email } = parsed.data
+
+    // Rate limit: 3 requests per email per hour
+    const rl = rateLimit(`forgot:${email}`, 3, 60 * 60 * 1000)
+    if (!rl.success) return rateLimitResponse(rl.resetAt)
+
+    // Also rate-limit by IP to prevent enumeration attempts
+    const ip = getClientIP(req)
+    const ipRl = rateLimit(`forgot-ip:${ip}`, 10, 60 * 60 * 1000)
+    if (!ipRl.success) return rateLimitResponse(ipRl.resetAt)
 
     // Always return success to prevent user enumeration
     const user = await db.user.findUnique({ where: { email } })
@@ -33,7 +43,7 @@ export async function POST(req: Request) {
       },
     })
 
-    await sendPasswordResetEmail(email, token)
+    await trySendEmail(() => sendPasswordResetEmail(email, token))
 
     return NextResponse.json({ success: true })
   } catch (error) {

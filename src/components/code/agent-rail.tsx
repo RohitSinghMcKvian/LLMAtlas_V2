@@ -1,86 +1,411 @@
 "use client";
 
-import { useRef, useState } from "react";
-import { Send, Square, Sparkles, ChevronDown, ChevronRight, CheckCircle2, XCircle, Terminal as TermIcon, FileCode2, ShieldCheck } from "lucide-react";
+import { useEffect, useRef, useState, useCallback, useMemo } from "react";
+import {
+  Send, Square, Sparkles, ChevronDown, ChevronRight, CheckCircle2, XCircle,
+  Terminal as TermIcon, FileCode2, Trash2, Eye, EyeOff, Undo2, Redo2,
+  Command as CommandIcon, Brain,
+} from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
-import { findModel } from "@/lib/models";
-import { useSettingsStore, useWorkspaceStore } from "@/lib/store";
+import { findModel, supportsTools } from "@/lib/models";
+import type { ToolFunction } from "@/lib/providers";
+import { useSettingsStore, useWorkspaceStore, type Workspace } from "@/lib/store";
+import { parseStreamBuffer } from "@/lib/stream-events";
+import { resetContainerMount } from "@/lib/code/webcontainer";
 import {
   AGENT_TOOLS, executeTool, workspaceSummary,
   isMutatingTool, previewMutation,
-  type ToolCall, type ToolResult, type PendingMutation,
+  type ToolCall, type ToolResult,
 } from "@/lib/code/tools";
+import {
+  useAgentStore, EMPTY_MESSAGES, EMPTY_PLAN, EMPTY_CHECKPOINTS,
+  type AgentMessage, type AutonomyMode,
+} from "@/lib/code/agent-store";
+import { AgentPlan } from "./agent-plan";
+import { AgentControls, type RunStats } from "./agent-controls";
 import { DiffViewer } from "./diff-viewer";
+import { AgentModelSelector } from "./agent-model-selector";
+import { CommandPalette, useCommandPaletteShortcut, buildAgentCommands } from "./command-palette";
+import { SessionManager, saveCurrentSession, downloadMarkdown } from "./session-manager";
+import { HelpDialog } from "./help-dialog";
+import { FileMentionPopup } from "./file-mention";
 import { cn } from "@/lib/utils";
 
-interface AgentMessage {
-  id: string;
-  role: "user" | "assistant" | "tool";
-  content: string;
-  toolCall?: ToolCall;
-  toolResult?: ToolResult;
-  pendingMutation?: PendingMutation;
-  pendingResolved?: "approved" | "rejected";
-  collapsed?: boolean;
-}
-
-/** Slash command shortcuts injected as prefixes into the user message. */
 const AGENT_SLASH: Record<string, string> = {
   "/init": "Generate a comprehensive CLAUDE.md describing this codebase: project structure, key dependencies, how to run, common tasks. Read package.json and a few source files first, then write CLAUDE.md.",
-  "/plan": "Enter plan mode. Read the relevant files, then propose an implementation plan in numbered steps. Do NOT call any write_file/edit_file tools — just describe the plan.",
-  "/test": "Read package.json, find the test script, then run it and report results. If no tests exist, propose a minimal test harness.",
-  "/explain": "Explain the project's architecture in 200 words: tech stack, key files, control flow.",
+  "/plan": "Analyze the request and the workspace, then call update_plan with a numbered checklist. Do NOT write or edit files yet — just produce the plan and wait for me.",
+  "/test": "Run the test suite with run_tests. If it fails, read the error, fix the cause, and re-run until it passes. If no tests exist, create a minimal one and run it.",
+  "/document": "Generate documentation: call generate_docs, refine the README for this project and write it with write_file, then add concise top-of-file comments where helpful.",
+  "/explain": "Explain the project's architecture in ~200 words: tech stack, key files, control flow. Read a few files first. Do not modify anything.",
+  "/compact": "Summarize the conversation so far in 3-5 concise bullet points, focusing on what was accomplished, what changed, and the current state. Then I will start a new session with this context.",
 };
+
+const AGENT_SYSTEM = `You are an autonomous senior software engineer working inside a browser-based IDE (LLMAtlas Code). You complete coding tasks END-TO-END the way Claude Code does:
+
+1. ANALYZE the request and the existing workspace. Read the relevant files before changing them.
+2. PLAN: call update_plan with a short ordered checklist, and keep it updated (mark steps in_progress → done) as you work.
+3. IMPLEMENT in small, focused edits — write_file for new files, edit_file for surgical changes.
+4. RUN & TEST: use run_bash to install/build and run_tests to execute the suite. Actually run your code — never assume it works.
+5. FIX: when a command or test fails, read the error output, fix the root cause, and re-run. Iterate until it is green.
+6. DOCUMENT: once it works, write/update a README (use generate_docs as a starting point) and add a CLAUDE.md for non-trivial projects.
+7. SUMMARIZE what you changed in a sentence or two.
+
+Rules: always re-read a file before editing it; prefer small edits; the Node runtime is WebContainer (npm works) and Python runs via Pyodide (limited pip). Do not start long-running dev servers inside tests. Keep prose short — the real work goes through the tools.`;
+
+const MAX_TURNS = 30;
+const MAX_FIX_ATTEMPTS = 6;
+const AGENT_MAX_TOKENS = 4096;
 
 interface Props {
   workspaceId: string;
 }
 
-const AGENT_SYSTEM = `You are an expert software engineer working inside a browser-based IDE. You can read, edit, and create files in the user's workspace, run shell commands (stubbed), grep, glob, and list directory contents. Use the tools provided. When you finish a task, briefly summarize what you changed. Prefer small, focused edits. Always re-read a file before editing it.`;
+function needsApproval(toolName: string, mode: AutonomyMode): boolean {
+  if (mode === "autonomous") return false;
+  if (!isMutatingTool(toolName)) return false;
+  if (mode === "manual") return true;
+  return toolName === "write_file" || toolName === "edit_file" || toolName === "delete_file";
+}
+
+function agentToolsAsNative(): ToolFunction[] {
+  return AGENT_TOOLS.map((t) => ({
+    type: "function" as const,
+    function: { name: t.name, description: t.description, parameters: t.parameters },
+  }));
+}
+
+function buildSystemPrompt(ws: Workspace, useNativeTools: boolean): string {
+  const toolSection = useNativeTools
+    ? "Call tools using the native function-calling API. Call ONE tool per message — wait for the result before proceeding."
+    : (() => {
+        const toolList = AGENT_TOOLS.map(
+          (t) => `- ${t.name}(${Object.keys((t.parameters as { properties?: Record<string, unknown> }).properties ?? {}).join(", ")}) — ${t.description}`,
+        ).join("\n");
+        return `You have access to these tools:\n${toolList}\n\nTo call a tool, output EXACTLY ONE JSON block on its own, then stop and wait for the result:\n\n\`\`\`tool\n{"name": "read_file", "args": {"path": "src/index.ts"}}\n\`\`\`\n\nCall ONE tool per message. After you receive the result, decide the next step.`;
+      })();
+
+  return `${AGENT_SYSTEM}\n\n${toolSection}\n\nWhen the task is fully complete — implemented, tested, and documented — reply with a short summary and NO tool call.\n\nCurrent workspace state:\n${workspaceSummary(ws)}`;
+}
+
+function parseToolCall(jsonish: string): ToolCall | null {
+  const build = (p: { name?: string; args?: Record<string, unknown> }) =>
+    p.name ? { id: crypto.randomUUID(), name: p.name, args: p.args ?? {} } : null;
+  try {
+    return build(JSON.parse(jsonish));
+  } catch {
+    const m = /\{[\s\S]*\}/.exec(jsonish);
+    if (m) {
+      try { return build(JSON.parse(m[0])); } catch { /* give up */ }
+    }
+    return null;
+  }
+}
+
+function findToolBlock(text: string): { raw: string; json: string } | null {
+  const re = /```(?:tool|json|javascript|js)?\s*\n([\s\S]*?)```/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    const body = m[1].trim();
+    if (body.startsWith("{") && /"name"\s*:/.test(body)) {
+      return { raw: m[0], json: body };
+    }
+  }
+  return null;
+}
+
+function stringifyResult(r?: ToolResult): string {
+  if (!r) return "(pending)";
+  if (r.ok) return typeof r.output === "string" ? r.output : JSON.stringify(r.output);
+  return `Error: ${r.error}`;
+}
+
+function commandFailed(call: ToolCall, result: ToolResult): boolean {
+  if (call.name !== "run_bash" && call.name !== "run_tests") return false;
+  if (!result.ok) return true;
+  const out = typeof result.output === "string" ? result.output : "";
+  const m = /\[exit (\d+)\]/.exec(out);
+  return m ? m[1] !== "0" : false;
+}
+
+/** Extract <thinking>...</thinking> blocks from assistant messages. */
+function splitThinking(content: string): { thinking: string | null; visible: string } {
+  const re = /<thinking>([\s\S]*?)<\/thinking>/g;
+  const thinkParts: string[] = [];
+  const visible = content.replace(re, (_, inner) => { thinkParts.push(inner.trim()); return ""; }).trim();
+  return { thinking: thinkParts.length > 0 ? thinkParts.join("\n\n") : null, visible };
+}
 
 export function AgentRail({ workspaceId }: Props) {
   const ws = useWorkspaceStore((s) => s.workspaces.find((w) => w.id === workspaceId));
+  const replaceFiles = useWorkspaceStore((s) => s.replaceFiles);
   const byok = useSettingsStore((s) => s.keys);
   const defaultModel = useSettingsStore((s) => s.defaultModel);
-  const [messages, setMessages] = useState<AgentMessage[]>([]);
+
+  const mode = useAgentStore((s) => s.mode);
+  const setMode = useAgentStore((s) => s.setMode);
+  const setMessages = useAgentStore((s) => s.setMessages);
+  const pushCheckpoint = useAgentStore((s) => s.pushCheckpoint);
+  const clearConversation = useAgentStore((s) => s.clearConversation);
+  const wsState = useAgentStore((s) => s.byWorkspace[workspaceId]);
+  const messages = wsState?.messages ?? EMPTY_MESSAGES;
+  const plan = wsState?.plan ?? EMPTY_PLAN;
+  const checkpoints = wsState?.checkpoints ?? EMPTY_CHECKPOINTS;
+
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
-  const [autoApprove, setAutoApprove] = useState(false);
   const [attachedFiles, setAttachedFiles] = useState<string[]>([]);
+  const [stats, setStats] = useState<RunStats | null>(null);
+
+  // OpenCode features state
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [sessionsOpen, setSessionsOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [showThinking, setShowThinking] = useState(false);
+  const [showToolDetails, setShowToolDetails] = useState(true);
+  const [undoStack, setUndoStack] = useState<AgentMessage[][]>([]);
+  const [redoStack, setRedoStack] = useState<AgentMessage[][]>([]);
+
+  // @ file mention state
+  const [mentionActive, setMentionActive] = useState(false);
+  const [mentionQuery, setMentionQuery] = useState("");
+  const [mentionPos, setMentionPos] = useState({ top: 0, left: 0 });
+  const mentionAnchorRef = useRef(0);
+
   const abortRef = useRef<AbortController | null>(null);
+  const abortedRef = useRef(false);
+  const convoRef = useRef<AgentMessage[]>([]);
+  const statsRef = useRef<RunStats>({ turns: 0, tokensIn: 0, tokensOut: 0, costUSD: 0, elapsedMs: 0 });
   const approvalResolversRef = useRef<Map<string, (r: "approved" | "rejected") => void>>(new Map());
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const model = findModel(defaultModel);
 
-  function waitForApproval(callId: string): Promise<"approved" | "rejected"> {
-    return new Promise((resolve) => {
-      approvalResolversRef.current.set(callId, resolve);
-    });
+  const filePaths = useMemo(() => ws?.files.map((f) => f.path) ?? [], [ws?.files]);
+
+  // Command palette shortcut (Ctrl+K)
+  useCommandPaletteShortcut(useCallback(() => setPaletteOpen(true), []));
+
+  // Global keyboard shortcuts
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      const ctrl = e.ctrlKey || e.metaKey;
+      if (ctrl && e.key === "n") { e.preventDefault(); newConversation(); }
+      if (ctrl && e.key === "l" && !e.shiftKey) { e.preventDefault(); setSessionsOpen(true); }
+      if (ctrl && e.key === "e" && !e.shiftKey) { e.preventDefault(); handleExport(); }
+      if (ctrl && e.key === "m") { e.preventDefault(); handleModelOpen(); }
+      if (ctrl && e.key === "t" && !e.shiftKey) { e.preventDefault(); setShowThinking((v) => !v); }
+      if (ctrl && e.key === "z" && !e.shiftKey) { e.preventDefault(); handleUndo(); }
+      if (ctrl && e.key === "y") { e.preventDefault(); handleRedo(); }
+      if (e.key === "?" && !ctrl && document.activeElement?.tagName !== "TEXTAREA" && document.activeElement?.tagName !== "INPUT") {
+        e.preventDefault();
+        setHelpOpen(true);
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages, undoStack]);
+
+  useEffect(() => {
+    setMessages(workspaceId, (prev) =>
+      prev.map((m) =>
+        m.pendingMutation && !m.pendingResolved && !m.toolResult
+          ? { ...m, pendingResolved: "rejected" as const, toolResult: { ok: false, error: "Session ended before approval." } }
+          : m,
+      ),
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspaceId]);
+
+  function commit(next: AgentMessage[]) {
+    convoRef.current = next;
+    setMessages(workspaceId, () => next);
   }
 
+  function waitForApproval(callId: string): Promise<"approved" | "rejected"> {
+    return new Promise((resolve) => approvalResolversRef.current.set(callId, resolve));
+  }
   function approveMutation(callId: string) {
-    setMessages((p) => p.map((m) => (m.toolCall?.id === callId ? { ...m, pendingResolved: "approved" } : m)));
+    commit(convoRef.current.map((m) => (m.toolCall?.id === callId ? { ...m, pendingResolved: "approved" } : m)));
     approvalResolversRef.current.get(callId)?.("approved");
     approvalResolversRef.current.delete(callId);
   }
   function rejectMutation(callId: string) {
-    setMessages((p) => p.map((m) => (m.toolCall?.id === callId ? { ...m, pendingResolved: "rejected" } : m)));
+    commit(convoRef.current.map((m) => (m.toolCall?.id === callId ? { ...m, pendingResolved: "rejected" } : m)));
     approvalResolversRef.current.get(callId)?.("rejected");
     approvalResolversRef.current.delete(callId);
   }
   function enableAutoApprove(callId: string) {
-    setAutoApprove(true);
+    setMode("autonomous");
     approveMutation(callId);
-    toast.success("Auto-approve enabled for this session");
+    toast.success("Autonomous mode on — the agent won't ask again this session");
   }
+
+  function accumulateStats(apiMessages: unknown, finalText: string, events: ReturnType<typeof parseStreamBuffer>["events"], startedAt: number) {
+    const usage = events.find((e) => e.kind === "usage");
+    const tin = usage?.promptTokens ?? Math.ceil(JSON.stringify(apiMessages).length / 4);
+    const tout = usage?.completionTokens ?? Math.ceil(finalText.length / 4);
+    const turnCost = usage?.costUSD ?? (model ? (tin / 1e6) * model.inputPrice + (tout / 1e6) * model.outputPrice : 0);
+    const s = statsRef.current;
+    s.turns += 1;
+    s.tokensIn += tin;
+    s.tokensOut += tout;
+    s.costUSD += turnCost;
+    s.elapsedMs = Date.now() - startedAt;
+    setStats({ ...s });
+  }
+
+  function handleRevert(checkpointId: string) {
+    const cp = useAgentStore.getState().byWorkspace[workspaceId]?.checkpoints.find((c) => c.id === checkpointId);
+    if (!cp) return;
+    replaceFiles(workspaceId, cp.files);
+    resetContainerMount();
+    toast.success(`Reverted to "${cp.label}"`);
+  }
+
+  function newConversation() {
+    if (busy) return;
+    if (messages.length > 0) {
+      saveCurrentSession(workspaceId);
+      toast.success("Session saved to history");
+    }
+    clearConversation(workspaceId);
+    setStats(null);
+    setUndoStack([]);
+    setRedoStack([]);
+    convoRef.current = [];
+  }
+
+  // Undo: remove last user+assistant+tool messages
+  function handleUndo() {
+    if (busy || messages.length === 0) return;
+    let idx = messages.length - 1;
+    while (idx >= 0 && messages[idx].role !== "user") idx--;
+    if (idx < 0) return;
+    const kept = messages.slice(0, idx);
+    const removed = messages.slice(idx);
+    setUndoStack((s) => [...s, removed]);
+    setRedoStack([]);
+    commit(kept);
+    toast.success("Undone last message");
+  }
+
+  // Redo: restore the last undone batch
+  function handleRedo() {
+    if (busy || undoStack.length === 0) return;
+    const last = undoStack[undoStack.length - 1];
+    setUndoStack((s) => s.slice(0, -1));
+    setRedoStack((s) => [...s, last]);
+    commit([...messages, ...last]);
+    toast.success("Redone");
+  }
+
+  function handleExport() {
+    downloadMarkdown(workspaceId);
+    toast.success("Exported session as Markdown");
+  }
+
+  function handleModelOpen() {
+    // Trigger the model selector by finding and clicking it
+    const btn = document.querySelector("[data-agent-model-trigger]") as HTMLButtonElement | null;
+    btn?.click();
+  }
+
+  function handleSlashFromPalette(cmd: string) {
+    setInput(cmd + " ");
+    inputRef.current?.focus();
+  }
+
+  function handleRestoreSession(restoredMessages: AgentMessage[]) {
+    commit(restoredMessages);
+    toast.success("Session restored");
+  }
+
+  // @ file mention handlers
+  function handleInputChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
+    const val = e.target.value;
+    setInput(val);
+
+    const cursorPos = e.target.selectionStart ?? val.length;
+    const before = val.slice(0, cursorPos);
+    const atMatch = /@([\w./\-]*)$/.exec(before);
+
+    if (atMatch) {
+      setMentionActive(true);
+      setMentionQuery(atMatch[1]);
+      mentionAnchorRef.current = cursorPos - atMatch[0].length;
+      setMentionPos({ top: 48, left: Math.min(atMatch.index * 7, 120) });
+    } else {
+      setMentionActive(false);
+    }
+  }
+
+  function handleMentionSelect(path: string) {
+    const before = input.slice(0, mentionAnchorRef.current);
+    const after = input.slice(inputRef.current?.selectionStart ?? input.length);
+    setInput(before + "@" + path + " " + after.replace(/^[\w./\-]*/, ""));
+    setMentionActive(false);
+
+    if (!attachedFiles.includes(path)) {
+      setAttachedFiles((prev) => [...prev, path]);
+    }
+    inputRef.current?.focus();
+  }
+
+  function handleInputKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (mentionActive) return; // let FileMentionPopup handle arrow/tab/enter
+
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      send();
+    }
+  }
+
+  // Command palette commands
+  const paletteCommands = useMemo(
+    () =>
+      buildAgentCommands({
+        onNewSession: newConversation,
+        onSessionList: () => setSessionsOpen(true),
+        onExport: handleExport,
+        onUndo: handleUndo,
+        onRedo: handleRedo,
+        onToggleThinking: () => setShowThinking((v) => !v),
+        onToggleDetails: () => setShowToolDetails((v) => !v),
+        onHelp: () => setHelpOpen(true),
+        onSetMode: (m) => { setMode(m); toast.success(`Mode: ${m}`); },
+        onSlash: handleSlashFromPalette,
+        onModelList: handleModelOpen,
+        thinkingVisible: showThinking,
+        detailsVisible: showToolDetails,
+        canUndo: messages.length > 0 && !busy,
+        canRedo: undoStack.length > 0 && !busy,
+      }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [showThinking, showToolDetails, messages.length, busy, undoStack.length],
+  );
 
   async function send() {
     if (!ws || !model || !input.trim() || busy) return;
     let prompt = input.trim();
-    // Slash-command expansion
+
+    // ! bash shortcut: run command directly without the agent
+    if (prompt.startsWith("!")) {
+      const cmd = prompt.slice(1).trim();
+      if (!cmd) return;
+      setInput("");
+      const userMsg: AgentMessage = { id: crypto.randomUUID(), role: "user", content: `!${cmd}`, createdAt: Date.now() };
+      const toolCall: ToolCall = { id: crypto.randomUUID(), name: "run_bash", args: { command: cmd } };
+      const result = await executeTool(workspaceId, toolCall);
+      const toolMsg: AgentMessage = { id: crypto.randomUUID(), role: "tool", content: "", toolCall, toolResult: result, createdAt: Date.now() };
+      commit([...messages, userMsg, toolMsg]);
+      return;
+    }
+
+    // Slash command expansion
     for (const [cmd, expansion] of Object.entries(AGENT_SLASH)) {
       if (prompt === cmd || prompt.startsWith(cmd + " ")) {
         const extra = prompt.slice(cmd.length).trim();
@@ -88,7 +413,8 @@ export function AgentRail({ workspaceId }: Props) {
         break;
       }
     }
-    // Attached files context
+
+    // Attached files → inline context
     if (attachedFiles.length) {
       const contexts = attachedFiles
         .map((p) => ws.files.find((f) => f.path === p))
@@ -98,28 +424,61 @@ export function AgentRail({ workspaceId }: Props) {
       prompt = prompt + "\n\nAttached files:\n" + contexts;
       setAttachedFiles([]);
     }
-    const userMsg: AgentMessage = { id: crypto.randomUUID(), role: "user", content: prompt };
-    setMessages((p) => [...p, userMsg]);
+
+    // @ mentions → also attach inline
+    const atMentions = prompt.match(/@([\w./\-]+)/g);
+    if (atMentions) {
+      const mentioned = atMentions
+        .map((m) => m.slice(1))
+        .filter((p) => ws.files.some((f) => f.path === p))
+        .filter((p) => !attachedFiles.includes(p));
+      if (mentioned.length) {
+        const contexts = mentioned
+          .map((p) => ws.files.find((f) => f.path === p))
+          .filter((f): f is NonNullable<typeof f> => Boolean(f))
+          .map((f) => `--- ${f.path} ---\n${f.content.slice(0, 5000)}\n--- end ---`)
+          .join("\n\n");
+        prompt = prompt + "\n\nReferenced files:\n" + contexts;
+      }
+    }
+
+    if (mode === "autonomous") {
+      pushCheckpoint(workspaceId, `Before: ${prompt.slice(0, 36)}${prompt.length > 36 ? "…" : ""}`, ws.files);
+    }
+
+    const seed = [...(useAgentStore.getState().byWorkspace[workspaceId]?.messages ?? [])];
+    const userMsg: AgentMessage = { id: crypto.randomUUID(), role: "user", content: prompt, createdAt: Date.now() };
+    commit([...seed, userMsg]);
     setInput("");
+    setMentionActive(false);
     setBusy(true);
+    abortedRef.current = false;
     abortRef.current = new AbortController();
 
-    try {
-      // Single round-trip agent loop: send chat, parse any tool calls from text, execute, recurse.
-      const conversation: AgentMessage[] = [...messages, userMsg];
-      const MAX_TURNS = 6;
-      for (let turn = 0; turn < MAX_TURNS; turn++) {
-        const placeholder: AgentMessage = { id: crypto.randomUUID(), role: "assistant", content: "" };
-        setMessages((p) => [...p, placeholder]);
+    const startedAt = Date.now();
+    statsRef.current = { turns: 0, tokensIn: 0, tokensOut: 0, costUSD: 0, elapsedMs: 0 };
+    setStats({ ...statsRef.current });
+    let fixAttempts = 0;
+    const useNativeTools = supportsTools(model);
+    const nativeTools = useNativeTools ? agentToolsAsNative() : undefined;
 
-        const sysPrompt = `${AGENT_SYSTEM}\n\nYou have access to these tools:\n${AGENT_TOOLS.map((t) => `- ${t.name}(${Object.keys((t.parameters as { properties?: Record<string, unknown> }).properties ?? {}).join(", ")}) — ${t.description}`).join("\n")}\n\nTo call a tool, output a JSON block in this exact form, on its own:\n\n\`\`\`tool\n{"name": "read_file", "args": {"path": "src/index.ts"}}\n\`\`\`\n\nAfter you call a tool, wait for the result before continuing. When you're done, reply normally without a tool block.\n\nCurrent workspace state:\n${workspaceSummary(ws)}`;
+    try {
+      for (let turn = 0; turn < MAX_TURNS; turn++) {
+        if (abortedRef.current) break;
+        const placeholderId = crypto.randomUUID();
+        commit([...convoRef.current, { id: placeholderId, role: "assistant", content: "", createdAt: Date.now() }]);
 
         const apiMessages = [
-          { role: "system" as const, content: sysPrompt },
-          ...conversation.map((m) => ({
-            role: m.role === "tool" ? ("user" as const) : (m.role as "user" | "assistant"),
-            content: m.role === "tool" ? `Tool result for ${m.toolCall?.name}: ${JSON.stringify(m.toolResult)}` : m.content,
-          })),
+          { role: "system" as const, content: buildSystemPrompt(ws, useNativeTools) },
+          ...convoRef.current
+            .filter((m) => m.id !== placeholderId)
+            .map((m) => ({
+              role: m.role === "tool" ? ("user" as const) : (m.role as "user" | "assistant"),
+              content:
+                m.role === "tool"
+                  ? `Tool result for ${m.toolCall?.name}(${JSON.stringify(m.toolCall?.args ?? {})}):\n${stringifyResult(m.toolResult)}`
+                  : m.content,
+            })),
         ];
 
         const res = await fetch("/api/chat", {
@@ -130,73 +489,64 @@ export function AgentRail({ workspaceId }: Props) {
             modelId: model.id,
             messages: apiMessages,
             temperature: 0.2,
-            maxTokens: 2048,
+            maxTokens: AGENT_MAX_TOKENS,
             apiKey: byok[model.provider],
+            ...(nativeTools ? { tools: nativeTools } : {}),
           }),
         });
         if (!res.ok || !res.body) throw new Error(await res.text().catch(() => "request failed"));
+
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
-        let buf = "";
+        let raw = "";
         while (true) {
           const { value, done } = await reader.read();
           if (done) break;
-          buf += decoder.decode(value, { stream: true });
-          setMessages((p) => {
-            const copy = [...p];
-            copy[copy.length - 1] = { ...copy[copy.length - 1], content: buf };
-            return copy;
-          });
+          raw += decoder.decode(value, { stream: true });
+          const cleanText = parseStreamBuffer(raw).text;
+          commit(convoRef.current.map((m) => (m.id === placeholderId ? { ...m, content: cleanText } : m)));
         }
 
-        const finalAssistant: AgentMessage = { ...placeholder, content: buf };
-        conversation.push(finalAssistant);
+        const { text: finalText, events } = parseStreamBuffer(raw);
+        accumulateStats(apiMessages, finalText, events, startedAt);
 
-        // Look for ```tool block
-        const toolMatch = /```tool\s*\n([\s\S]*?)```/.exec(buf);
+        const toolMatch = findToolBlock(finalText);
         if (!toolMatch) break;
-        let call: ToolCall;
-        try {
-          const parsed = JSON.parse(toolMatch[1]) as { name: string; args?: Record<string, unknown> };
-          call = { id: crypto.randomUUID(), name: parsed.name, args: parsed.args ?? {} };
-        } catch {
-          toast.error("Couldn't parse tool call JSON");
-          break;
-        }
-        const requiresApproval = isMutatingTool(call.name) && !autoApprove;
-        if (requiresApproval) {
-          const mutation = previewMutation(workspaceId, call);
-          const toolMsg: AgentMessage = {
-            id: crypto.randomUUID(),
-            role: "tool",
-            content: "",
-            toolCall: call,
-            pendingMutation: mutation ?? undefined,
-          };
-          setMessages((p) => [...p, toolMsg]);
-          // Wait for user approval before continuing the loop.
+
+        const displayText = finalText.replace(/```(?:tool|json|javascript|js)?\s*\n[\s\S]*?```/g, "").trim();
+        commit(convoRef.current.map((m) => (m.id === placeholderId ? { ...m, content: displayText } : m)));
+
+        const call = parseToolCall(toolMatch.json);
+        if (!call) { toast.error("Couldn't parse the agent's tool call"); break; }
+
+        const toolMsgId = crypto.randomUUID();
+        const liveMode = useAgentStore.getState().mode;
+        if (needsApproval(call.name, liveMode)) {
+          const mutation = previewMutation(workspaceId, call) ?? undefined;
+          commit([...convoRef.current, { id: toolMsgId, role: "tool", content: "", toolCall: call, pendingMutation: mutation, createdAt: Date.now() }]);
           const resolved = await waitForApproval(call.id);
+          if (abortedRef.current) break;
           if (resolved === "rejected") {
-            setMessages((p) => p.map((m) => (m.toolCall?.id === call.id
-              ? { ...m, toolResult: { ok: false, error: "User rejected this mutation." } }
-              : m)));
-            conversation.push({ ...toolMsg, toolResult: { ok: false, error: "User rejected this mutation." } });
-            break;
+            const rej: ToolResult = { ok: false, error: "User rejected this action — try a different approach or ask for guidance." };
+            commit(convoRef.current.map((m) => (m.id === toolMsgId ? { ...m, toolResult: rej } : m)));
+            continue;
           }
           const result = await executeTool(workspaceId, call);
-          setMessages((p) => p.map((m) => (m.toolCall?.id === call.id ? { ...m, toolResult: result } : m)));
-          conversation.push({ ...toolMsg, toolResult: result });
+          commit(convoRef.current.map((m) => (m.id === toolMsgId ? { ...m, toolResult: result } : m)));
+          if (commandFailed(call, result)) fixAttempts += 1; else if (call.name === "run_bash" || call.name === "run_tests") fixAttempts = 0;
         } else {
+          commit([...convoRef.current, { id: toolMsgId, role: "tool", content: "", toolCall: call, createdAt: Date.now() }]);
           const result = await executeTool(workspaceId, call);
-          const toolMsg: AgentMessage = {
-            id: crypto.randomUUID(),
-            role: "tool",
-            content: "",
-            toolCall: call,
-            toolResult: result,
-          };
-          setMessages((p) => [...p, toolMsg]);
-          conversation.push(toolMsg);
+          commit(convoRef.current.map((m) => (m.id === toolMsgId ? { ...m, toolResult: result } : m)));
+          if (commandFailed(call, result)) fixAttempts += 1; else if (call.name === "run_bash" || call.name === "run_tests") fixAttempts = 0;
+        }
+
+        if (fixAttempts >= MAX_FIX_ATTEMPTS) {
+          commit([...convoRef.current, {
+            id: crypto.randomUUID(), role: "assistant", createdAt: Date.now(),
+            content: `⚠️ Stopped after ${MAX_FIX_ATTEMPTS} failed test/command attempts. The last error is above — I need your guidance to continue.`,
+          }]);
+          break;
         }
       }
     } catch (e) {
@@ -210,36 +560,107 @@ export function AgentRail({ workspaceId }: Props) {
   }
 
   function stop() {
+    abortedRef.current = true;
     abortRef.current?.abort();
+    approvalResolversRef.current.forEach((resolve) => resolve("rejected"));
+    approvalResolversRef.current.clear();
     setBusy(false);
   }
 
   return (
     <div className="flex flex-col h-full bg-card">
-      <div className="px-3 py-2 border-b flex items-center gap-2">
-        <div className="h-6 w-6 rounded-md bg-gradient-to-br from-violet-500 to-indigo-600 flex items-center justify-center">
+      {/* Header */}
+      <div className="px-3 py-2 border-b flex items-center gap-2 min-w-0">
+        <div className="h-6 w-6 rounded-md bg-gradient-to-br from-violet-500 to-indigo-600 flex items-center justify-center shrink-0">
           <Sparkles className="h-3 w-3 text-white" />
         </div>
-        <div className="text-xs font-semibold">Agent</div>
-        {autoApprove && (
-          <button
-            onClick={() => { setAutoApprove(false); toast.info("Approval prompts re-enabled"); }}
-            className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-green-500/10 border border-green-500/30 text-green-600 dark:text-green-400"
-            title="Click to disable auto-approve"
-          >
-            <ShieldCheck className="h-2.5 w-2.5" /> auto
-          </button>
-        )}
-        <div className="text-[10px] text-muted-foreground ml-auto truncate">{model?.name ?? "no model"}</div>
+        <div className="text-xs font-semibold shrink-0">Agent</div>
+        <button
+          onClick={newConversation}
+          disabled={busy || messages.length === 0}
+          title="New session (Ctrl+N)"
+          className="text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-40 inline-flex items-center gap-1 shrink-0"
+        >
+          <Trash2 className="h-3 w-3" /> New
+        </button>
+        <button
+          onClick={() => setPaletteOpen(true)}
+          title="Command palette (Ctrl+K)"
+          className="text-[11px] text-muted-foreground hover:text-foreground inline-flex items-center gap-1 shrink-0"
+        >
+          <CommandIcon className="h-3 w-3" />
+        </button>
+        <AgentModelSelector className="ml-auto" />
       </div>
 
+      {/* Toolbar row */}
+      <div className="px-2.5 py-1 border-b flex items-center gap-1 flex-wrap">
+        <button
+          onClick={() => setShowThinking((v) => !v)}
+          title="Toggle thinking blocks (Ctrl+T)"
+          className={cn(
+            "inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors",
+            showThinking ? "bg-violet-500/20 text-violet-400" : "text-muted-foreground hover:bg-accent",
+          )}
+        >
+          <Brain className="h-3 w-3" /> Think
+        </button>
+        <button
+          onClick={() => setShowToolDetails((v) => !v)}
+          title="Toggle tool details"
+          className={cn(
+            "inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors",
+            showToolDetails ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-accent",
+          )}
+        >
+          {showToolDetails ? <Eye className="h-3 w-3" /> : <EyeOff className="h-3 w-3" />} Details
+        </button>
+        <button
+          onClick={handleUndo}
+          disabled={busy || messages.length === 0}
+          title="Undo (Ctrl+Z)"
+          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium text-muted-foreground hover:bg-accent disabled:opacity-30 transition-colors"
+        >
+          <Undo2 className="h-3 w-3" />
+        </button>
+        <button
+          onClick={handleRedo}
+          disabled={busy || undoStack.length === 0}
+          title="Redo (Ctrl+Y)"
+          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium text-muted-foreground hover:bg-accent disabled:opacity-30 transition-colors"
+        >
+          <Redo2 className="h-3 w-3" />
+        </button>
+        <div className="ml-auto flex items-center gap-1">
+          <button
+            onClick={() => setSessionsOpen(true)}
+            title="Session history (Ctrl+L)"
+            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium text-muted-foreground hover:bg-accent transition-colors"
+          >
+            <ChevronDown className="h-3 w-3" /> Sessions
+          </button>
+        </div>
+      </div>
+
+      <AgentControls mode={mode} onMode={setMode} busy={busy} stats={stats} checkpoints={checkpoints} onRevert={handleRevert} />
+      <AgentPlan plan={plan} />
+
+      {/* Messages */}
       <div className="flex-1 overflow-y-auto p-3 space-y-3">
         {messages.length === 0 ? (
-          <div className="text-center text-xs text-muted-foreground py-8">
+          <div className="text-center text-xs text-muted-foreground py-8 px-2">
             <Sparkles className="h-5 w-5 mx-auto mb-2 opacity-50" />
-            Ask the agent to read, write, search, or modify files in this workspace.
-            <div className="mt-3 text-[10px] text-muted-foreground/70 font-mono">
-              Try: /init · /plan · /test · /explain
+            <p>Describe a task and the agent will plan, build, run, test, fix, and document it.</p>
+            <div className="mt-3 text-[11px] text-muted-foreground/70 font-mono flex flex-wrap justify-center gap-x-2 gap-y-1">
+              {Object.keys(AGENT_SLASH).map((cmd) => (
+                <button key={cmd} onClick={() => { setInput(cmd + " "); inputRef.current?.focus(); }} className="hover:text-foreground transition-colors">
+                  {cmd}
+                </button>
+              ))}
+            </div>
+            <div className="mt-4 text-[10px] text-muted-foreground/50 space-y-0.5">
+              <p>Press <kbd className="px-1 py-0.5 rounded border bg-muted font-mono text-[9px]">Ctrl+Shift+K</kbd> for agent commands</p>
+              <p>Type <kbd className="px-1 py-0.5 rounded border bg-muted font-mono text-[9px]">@file</kbd> to reference files · <kbd className="px-1 py-0.5 rounded border bg-muted font-mono text-[9px]">!cmd</kbd> to run bash</p>
             </div>
           </div>
         ) : (
@@ -247,6 +668,8 @@ export function AgentRail({ workspaceId }: Props) {
             <AgentMessageView
               key={m.id}
               m={m}
+              showThinking={showThinking}
+              showToolDetails={showToolDetails}
               onApprove={() => m.toolCall && approveMutation(m.toolCall.id)}
               onReject={() => m.toolCall && rejectMutation(m.toolCall.id)}
               onAutoApprove={() => m.toolCall && enableAutoApprove(m.toolCall.id)}
@@ -255,8 +678,9 @@ export function AgentRail({ workspaceId }: Props) {
         )}
       </div>
 
+      {/* Input area */}
       <div
-        className="border-t p-2"
+        className="border-t p-2 relative"
         onDragOver={(e) => { if (e.dataTransfer.types.includes("application/x-llmatlas-file")) { e.preventDefault(); } }}
         onDrop={(e) => {
           const path = e.dataTransfer.getData("application/x-llmatlas-file");
@@ -267,12 +691,23 @@ export function AgentRail({ workspaceId }: Props) {
           e.preventDefault();
         }}
       >
+        {/* @ file mention popup */}
+        {mentionActive && (
+          <FileMentionPopup
+            files={filePaths}
+            query={mentionQuery}
+            position={mentionPos}
+            onSelect={handleMentionSelect}
+            onClose={() => setMentionActive(false)}
+          />
+        )}
+
         {attachedFiles.length > 0 && (
           <div className="flex flex-wrap gap-1 mb-1.5">
             {attachedFiles.map((p) => (
-              <div key={p} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border bg-card text-[10px]">
-                <FileCode2 className="h-2.5 w-2.5 text-muted-foreground" />
-                <span className="truncate max-w-[160px] font-mono">{p}</span>
+              <div key={p} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border bg-card text-[11px] min-w-0">
+                <FileCode2 className="h-3 w-3 text-muted-foreground shrink-0" />
+                <span className="truncate font-mono">{p}</span>
                 <button onClick={() => setAttachedFiles((a) => a.filter((x) => x !== p))} className="opacity-60 hover:opacity-100">
                   <XCircle className="h-2.5 w-2.5" />
                 </button>
@@ -280,38 +715,53 @@ export function AgentRail({ workspaceId }: Props) {
             ))}
           </div>
         )}
-        <Card className="p-1.5">
+        <Card className="p-2">
           <Textarea
+            ref={inputRef}
             value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
-            placeholder="Ask the agent… or /init /plan /test /explain · drop files here for context"
-            className="border-0 resize-none focus-visible:ring-0 min-h-[44px] text-xs"
+            onChange={handleInputChange}
+            onKeyDown={handleInputKeyDown}
+            placeholder="Message… @ files · ! bash · / commands · Ctrl+K palette"
+            className="border-0 resize-none focus-visible:ring-0 min-h-[48px] text-sm"
           />
-          <div className="flex justify-end mt-1">
+          <div className="flex items-center justify-between mt-1.5">
+            <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
+              <button onClick={() => setHelpOpen(true)} title="Keyboard shortcuts (?)" className="hover:text-foreground p-0.5 rounded">
+                <CommandIcon className="h-3 w-3" />
+              </button>
+            </div>
             {busy ? (
-              <Button size="sm" variant="destructive" onClick={stop} className="h-6 gap-1 text-xs">
+              <Button size="sm" variant="destructive" onClick={stop} className="h-7 gap-1.5 text-xs px-3">
                 <Square className="h-3 w-3" /> Stop
               </Button>
             ) : (
-              <Button size="sm" onClick={send} disabled={!input.trim() || !model} className="h-6 gap-1 text-xs">
+              <Button size="sm" onClick={send} disabled={!input.trim() || !model} className="h-7 gap-1.5 text-xs px-3">
                 <Send className="h-3 w-3" /> Send
               </Button>
             )}
           </div>
         </Card>
       </div>
+
+      {/* Overlays */}
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} commands={paletteCommands} />
+      <SessionManager open={sessionsOpen} onClose={() => setSessionsOpen(false)} workspaceId={workspaceId} onRestore={handleRestoreSession} />
+      <HelpDialog open={helpOpen} onClose={() => setHelpOpen(false)} />
     </div>
   );
 }
 
 function AgentMessageView({
   m,
+  showThinking,
+  showToolDetails,
   onApprove,
   onReject,
   onAutoApprove,
 }: {
   m: AgentMessage;
+  showThinking: boolean;
+  showToolDetails: boolean;
   onApprove: () => void;
   onReject: () => void;
   onAutoApprove: () => void;
@@ -319,34 +769,41 @@ function AgentMessageView({
   const [collapsed, setCollapsed] = useState(false);
 
   if (m.role === "tool") {
-    // Pending mutation — show diff + approval gate
     if (m.pendingMutation && !m.pendingResolved) {
       return <DiffViewer mutation={m.pendingMutation} onApprove={onApprove} onReject={onReject} onAutoApprove={onAutoApprove} />;
     }
     const ok = m.toolResult?.ok;
-    const Icon = m.toolCall?.name === "run_bash" ? TermIcon : FileCode2;
+    const Icon = m.toolCall?.name === "run_bash" || m.toolCall?.name === "run_tests" ? TermIcon : FileCode2;
+
+    if (!showToolDetails) {
+      return (
+        <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground px-1">
+          <Icon className="h-3 w-3 shrink-0" />
+          <span className="font-mono">{m.toolCall?.name}</span>
+          {ok ? <CheckCircle2 className="h-3 w-3 text-green-500 shrink-0" /> : <XCircle className="h-3 w-3 text-red-500 shrink-0" />}
+        </div>
+      );
+    }
+
     return (
-      <div className="rounded-md border bg-muted/30 text-xs">
-        <button
-          onClick={() => setCollapsed((v) => !v)}
-          className="w-full flex items-center gap-2 px-2 py-1.5 hover:bg-accent/50"
-        >
-          {collapsed ? <ChevronRight className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
-          <Icon className="h-3 w-3 text-muted-foreground" />
-          <span className="font-mono font-medium">{m.toolCall?.name}</span>
-          <span className="text-muted-foreground truncate flex-1 text-left">
-            {Object.entries(m.toolCall?.args ?? {}).map(([k, v]) => `${k}=${typeof v === "string" ? JSON.stringify(v).slice(0, 30) : String(v).slice(0, 30)}`).join(", ")}
+      <div className="rounded-lg border bg-muted/30 text-xs min-w-0">
+        <button onClick={() => setCollapsed((v) => !v)} className="w-full flex items-center gap-1.5 px-2.5 py-2 hover:bg-accent/50 min-w-0">
+          {collapsed ? <ChevronRight className="h-3.5 w-3.5 shrink-0" /> : <ChevronDown className="h-3.5 w-3.5 shrink-0" />}
+          <Icon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+          <span className="font-mono font-medium shrink-0">{m.toolCall?.name}</span>
+          <span className="text-muted-foreground truncate min-w-0 text-left text-[11px]">
+            {Object.entries(m.toolCall?.args ?? {}).map(([k, v]) => `${k}=${typeof v === "string" ? JSON.stringify(v).slice(0, 24) : String(v).slice(0, 24)}`).join(", ")}
           </span>
-          {ok ? <CheckCircle2 className="h-3 w-3 text-green-500" /> : <XCircle className="h-3 w-3 text-red-500" />}
+          {ok ? <CheckCircle2 className="h-3.5 w-3.5 text-green-500 shrink-0" /> : <XCircle className="h-3.5 w-3.5 text-red-500 shrink-0" />}
         </button>
         {!collapsed && (
-          <div className="px-2 pb-2">
-            <pre className="text-[10px] font-mono bg-background/60 p-2 rounded border overflow-auto max-h-40 whitespace-pre-wrap break-all">
+          <div className="px-2.5 pb-2.5">
+            <pre className="text-[11px] font-mono bg-background/60 p-2.5 rounded-md border overflow-auto max-h-48 whitespace-pre-wrap break-all leading-relaxed">
               {m.toolResult?.ok
                 ? typeof m.toolResult.output === "string"
                   ? m.toolResult.output
                   : JSON.stringify(m.toolResult.output, null, 2)
-                : `Error: ${m.toolResult?.error}`}
+                : `Error: ${m.toolResult?.error ?? "(no result)"}`}
             </pre>
           </div>
         )}
@@ -355,11 +812,24 @@ function AgentMessageView({
   }
 
   const isUser = m.role === "user";
+  const { thinking, visible } = isUser ? { thinking: null, visible: m.content } : splitThinking(m.content);
+
   return (
-    <div className={cn("text-xs", isUser ? "ml-4" : "mr-4")}>
-      <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">{isUser ? "You" : "Agent"}</div>
-      <div className={cn("rounded-md p-2 whitespace-pre-wrap break-words", isUser ? "bg-primary/10 border border-primary/20" : "bg-muted/40 border")}>
-        {m.content || <span className="text-muted-foreground italic">…</span>}
+    <div className="text-xs min-w-0">
+      <div className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1 font-medium">{isUser ? "You" : "Agent"}</div>
+      {thinking && showThinking && (
+        <div className="rounded-lg p-2 mb-1.5 bg-violet-500/5 border border-violet-500/20 text-[11px] text-violet-300 whitespace-pre-wrap break-words leading-relaxed">
+          <div className="flex items-center gap-1 text-[10px] uppercase tracking-wider text-violet-400 font-semibold mb-1">
+            <Brain className="h-3 w-3" /> Thinking
+          </div>
+          {thinking}
+        </div>
+      )}
+      <div className={cn(
+        "rounded-lg p-2.5 whitespace-pre-wrap break-words leading-relaxed",
+        isUser ? "bg-primary/10 border border-primary/20" : "bg-muted/40 border border-muted/60",
+      )}>
+        {visible || <span className="text-muted-foreground italic">…</span>}
       </div>
     </div>
   );

@@ -55,6 +55,11 @@ export interface ChatMessage {
   content: string | ContentBlock[];
 }
 
+export interface ToolFunction {
+  type: "function";
+  function: { name: string; description: string; parameters: Record<string, unknown> };
+}
+
 export interface ChatOptions {
   modelId: string;
   messages: ChatMessage[];
@@ -64,6 +69,7 @@ export interface ChatOptions {
   frequencyPenalty?: number;
   presencePenalty?: number;
   apiKey?: string; // BYOK override
+  tools?: ToolFunction[];
 }
 
 /** Flatten content (string or blocks) to a plain text fallback. */
@@ -139,6 +145,7 @@ async function chatOpenAICompat(
       top_p: body.topP ?? 1,
       ...(body.frequencyPenalty ? { frequency_penalty: body.frequencyPenalty } : {}),
       ...(body.presencePenalty ? { presence_penalty: body.presencePenalty } : {}),
+      ...(body.tools?.length ? { tools: body.tools, tool_choice: "auto" } : {}),
       stream: true,
     }),
   });
@@ -270,6 +277,9 @@ export async function* parseStream(
   const decoder = new TextDecoder();
   let buffer = "";
 
+  // Accumulate native tool_calls from streaming chunks → emit as ```tool blocks
+  const pendingCalls: Map<number, { name: string; args: string }> = new Map();
+
   while (true) {
     const { value, done } = await reader.read();
     if (done) break;
@@ -286,7 +296,14 @@ export async function* parseStream(
 
       // Cloudflare uses both SSE "data:" and raw JSON
       const data = line.startsWith("data:") ? line.slice(5).trim() : line;
-      if (data === "[DONE]") return;
+      if (data === "[DONE]") {
+        // Flush any remaining tool calls
+        for (const [, tc] of pendingCalls) {
+          yield `\n\`\`\`tool\n{"name": ${JSON.stringify(tc.name)}, "args": ${tc.args || "{}"}}\n\`\`\`\n`;
+        }
+        pendingCalls.clear();
+        return;
+      }
 
       try {
         const json = JSON.parse(data);
@@ -298,7 +315,34 @@ export async function* parseStream(
             completionTokens: usage.completion_tokens ?? usage.candidatesTokenCount,
           });
         }
-        // Common OpenAI-style
+
+        // Native tool_calls — accumulate across streaming chunks
+        const toolCalls = json.choices?.[0]?.delta?.tool_calls as
+          | Array<{ index?: number; id?: string; function?: { name?: string; arguments?: string } }>
+          | undefined;
+        if (toolCalls) {
+          for (const tc of toolCalls) {
+            const idx = tc.index ?? 0;
+            if (!pendingCalls.has(idx) && tc.function?.name) {
+              pendingCalls.set(idx, { name: tc.function.name, args: "" });
+            }
+            const entry = pendingCalls.get(idx);
+            if (entry && tc.function?.arguments) {
+              entry.args += tc.function.arguments;
+            }
+          }
+        }
+
+        // Emit accumulated tool calls when finish_reason signals completion
+        const finishReason = json.choices?.[0]?.finish_reason;
+        if (finishReason && pendingCalls.size > 0) {
+          for (const [, tc] of pendingCalls) {
+            yield `\n\`\`\`tool\n{"name": ${JSON.stringify(tc.name)}, "args": ${tc.args || "{}"}}\n\`\`\`\n`;
+          }
+          pendingCalls.clear();
+        }
+
+        // Common OpenAI-style text content
         const delta =
           json.choices?.[0]?.delta?.content ??
           json.choices?.[0]?.text ??
@@ -314,6 +358,11 @@ export async function* parseStream(
         // ignore non-JSON heartbeats
       }
     }
+  }
+
+  // Flush pending tool calls if stream ended without [DONE]
+  for (const [, tc] of pendingCalls) {
+    yield `\n\`\`\`tool\n{"name": ${JSON.stringify(tc.name)}, "args": ${tc.args || "{}"}}\n\`\`\`\n`;
   }
 }
 

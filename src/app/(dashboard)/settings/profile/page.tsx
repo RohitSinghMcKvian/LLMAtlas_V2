@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useState, useRef, useCallback } from "react"
 import { useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useSession } from "next-auth/react"
@@ -30,6 +30,60 @@ export default function ProfileSettingsPage() {
   const [profile, setProfile] = useState<UserProfile | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
+  const [isUploadingAvatar, setIsUploadingAvatar] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const handleAvatarUpload = useCallback(async (file: File) => {
+    if (!file.type.startsWith("image/")) {
+      toast.error("Please select an image file")
+      return
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      toast.error("Image must be under 5MB")
+      return
+    }
+
+    setIsUploadingAvatar(true)
+    try {
+      // Resize to 200x200 and convert to base64
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const img = new Image()
+        img.onload = () => {
+          const canvas = document.createElement("canvas")
+          const size = 200
+          canvas.width = size
+          canvas.height = size
+          const ctx = canvas.getContext("2d")!
+          // Center-crop: take the largest square from the center
+          const min = Math.min(img.width, img.height)
+          const sx = (img.width - min) / 2
+          const sy = (img.height - min) / 2
+          ctx.drawImage(img, sx, sy, min, min, 0, 0, size, size)
+          resolve(canvas.toDataURL("image/jpeg", 0.85))
+        }
+        img.onerror = reject
+        img.src = URL.createObjectURL(file)
+      })
+
+      const res = await fetch("/api/user/profile", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ image: dataUrl }),
+      })
+      const json = await res.json()
+      if (!res.ok) {
+        toast.error(json.error || "Upload failed")
+        return
+      }
+      setProfile((p) => p ? { ...p, image: dataUrl } : p)
+      await updateSession({ image: dataUrl })
+      toast.success("Avatar updated")
+    } catch {
+      toast.error("Failed to upload avatar")
+    } finally {
+      setIsUploadingAvatar(false)
+    }
+  }, [updateSession])
 
   const {
     register,
@@ -124,8 +178,27 @@ export default function ProfileSettingsPage() {
               <User className="w-8 h-8" />
             )}
           </div>
-          <button className="absolute -bottom-1 -right-1 h-7 w-7 rounded-full bg-primary flex items-center justify-center border-2 border-background hover:bg-primary/90 transition-colors">
-            <Camera className="w-3 h-3 text-white" />
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0]
+              if (file) handleAvatarUpload(file)
+              e.target.value = ""
+            }}
+          />
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={isUploadingAvatar}
+            className="absolute -bottom-1 -right-1 h-7 w-7 rounded-full bg-primary flex items-center justify-center border-2 border-background hover:bg-primary/90 transition-colors"
+          >
+            {isUploadingAvatar ? (
+              <Loader2 className="w-3 h-3 text-white animate-spin" />
+            ) : (
+              <Camera className="w-3 h-3 text-white" />
+            )}
           </button>
         </div>
         <div className="flex-1 min-w-0">

@@ -148,7 +148,7 @@ export default function CodePage() {
         <button
           onClick={() => setTerminalOpen((v) => !v)}
           className={cn(
-            "hidden md:inline-flex items-center gap-1 h-7 px-2 rounded-md border text-xs flex-shrink-0",
+            "hidden lg:inline-flex items-center gap-1 h-7 px-2 rounded-md border text-xs flex-shrink-0",
             terminalOpen ? "bg-primary/10 border-primary/30 text-primary" : "hover:bg-accent text-muted-foreground",
           )}
           title="Toggle terminal"
@@ -158,7 +158,7 @@ export default function CodePage() {
         <button
           onClick={() => setPreviewOpen((v) => !v)}
           className={cn(
-            "hidden md:inline-flex items-center gap-1 h-7 px-2 rounded-md border text-xs flex-shrink-0",
+            "hidden lg:inline-flex items-center gap-1 h-7 px-2 rounded-md border text-xs flex-shrink-0",
             previewOpen ? "bg-primary/10 border-primary/30 text-primary" : "hover:bg-accent text-muted-foreground",
           )}
           title="Toggle live preview"
@@ -175,10 +175,10 @@ export default function CodePage() {
         {isEnabled("github_push") && <PushToGithub workspace={current} />}
       </div>
 
-      {/* ── Desktop (≥md): 4-way resizable split ───────────────────────── */}
-      <div className="hidden md:block flex-1 min-h-0">
+      {/* ── Desktop (≥lg): 4-way resizable split ───────────────────────── */}
+      <div className="hidden lg:block flex-1 min-h-0">
         <PanelGroup orientation="horizontal">
-          <Panel defaultSize={18} minSize={12} maxSize={30}>
+          <Panel defaultSize="18%" minSize="12%" maxSize="30%">
             <div className="h-full bg-card border-r overflow-y-auto">
               <FileTree
                 workspaceId={current.id}
@@ -187,11 +187,11 @@ export default function CodePage() {
               />
             </div>
           </Panel>
-          <PanelResizeHandle className="w-px bg-border hover:bg-primary/40 transition-colors" />
+          <PanelResizeHandle className="w-1 bg-border hover:bg-primary/40 transition-colors cursor-col-resize" />
 
-          <Panel defaultSize={52} minSize={30}>
+          <Panel defaultSize="50%" minSize="25%">
             <PanelGroup orientation="vertical">
-              <Panel defaultSize={terminalOpen ? 70 : 100} minSize={20}>
+              <Panel defaultSize={terminalOpen ? "70%" : "100%"} minSize="20%">
                 <div className="flex flex-col h-full">
                   {/* Tabs */}
                   <div className="border-b bg-card flex items-center overflow-x-auto">
@@ -228,8 +228,8 @@ export default function CodePage() {
               </Panel>
               {terminalOpen && (
                 <>
-                  <PanelResizeHandle className="h-px bg-border hover:bg-primary/40 transition-colors" />
-                  <Panel defaultSize={30} minSize={15}>
+                  <PanelResizeHandle className="h-1 bg-border hover:bg-primary/40 transition-colors cursor-row-resize" />
+                  <Panel defaultSize="30%" minSize="15%">
                     <Terminal workspaceId={current.id} onPreviewUrlChange={setPreviewUrl} />
                   </Panel>
                 </>
@@ -239,22 +239,22 @@ export default function CodePage() {
 
           {previewOpen && (
             <>
-              <PanelResizeHandle className="w-px bg-border hover:bg-primary/40 transition-colors" />
-              <Panel defaultSize={30} minSize={15} maxSize={60}>
+              <PanelResizeHandle className="w-1 bg-border hover:bg-primary/40 transition-colors cursor-col-resize" />
+              <Panel defaultSize="30%" minSize="15%" maxSize="60%">
                 <Preview workspaceId={current.id} webcontainerUrl={previewUrl} />
               </Panel>
             </>
           )}
-          <PanelResizeHandle className="w-px bg-border hover:bg-primary/40 transition-colors" />
+          <PanelResizeHandle className="w-1 bg-border hover:bg-primary/40 transition-colors cursor-col-resize" />
 
-          <Panel defaultSize={previewOpen ? 22 : 30} minSize={15} maxSize={50}>
+          <Panel defaultSize={previewOpen ? "28%" : "32%"} minSize="22%" maxSize="55%">
             <AgentRail workspaceId={current.id} />
           </Panel>
         </PanelGroup>
       </div>
 
-      {/* ── Mobile (<md): single pane + tab switcher ────────────────────── */}
-      <div className="flex md:hidden flex-col flex-1 min-h-0">
+      {/* ── Mobile / Tablet (<lg): single pane + tab switcher ─────────── */}
+      <div className="flex lg:hidden flex-col flex-1 min-h-0">
         {/* Pane tab bar */}
         <div className="flex items-stretch border-b bg-card overflow-x-auto flex-shrink-0">
           {([

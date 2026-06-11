@@ -6,7 +6,7 @@ import { zodResolver } from "@hookform/resolvers/zod"
 import { useSession } from "next-auth/react"
 import { motion } from "framer-motion"
 import {
-  Shield, ShieldCheck, ShieldOff, Key, History, Trash2, Loader2, Eye, EyeOff, ChevronDown, ChevronUp
+  Shield, ShieldCheck, ShieldOff, Key, KeyRound, History, Trash2, Loader2, Eye, EyeOff, ChevronDown, ChevronUp
 } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
@@ -16,10 +16,27 @@ import { TwoFactorSetup } from "@/components/auth/two-factor-setup"
 import { LoginHistoryTable } from "@/components/auth/login-history-table"
 import { DeleteAccountDialog } from "@/components/auth/delete-account-dialog"
 import { changePasswordSchema, type ChangePasswordInput } from "@/lib/validations/auth"
+import { z } from "zod"
+
+// Schema for OAuth-only users setting a password for the first time
+const setPasswordSchema = z.object({
+  newPassword: z
+    .string()
+    .min(8, "Password must be at least 8 characters")
+    .regex(/[A-Z]/, "Must include an uppercase letter")
+    .regex(/[0-9]/, "Must include a number")
+    .regex(/[^a-zA-Z0-9]/, "Must include a special character"),
+  confirmPassword: z.string(),
+}).refine((data) => data.newPassword === data.confirmPassword, {
+  message: "Passwords don't match",
+  path: ["confirmPassword"],
+})
+
+type SetPasswordInput = z.infer<typeof setPasswordSchema>
 
 interface UserProfile {
   twoFactorAuth: { enabled: boolean } | null
-  hashedPassword?: string | null
+  hasPassword?: boolean
 }
 
 export default function SecuritySettingsPage() {
@@ -34,13 +51,22 @@ export default function SecuritySettingsPage() {
   const [showCurrentPw, setShowCurrentPw] = useState(false)
   const [showNewPw, setShowNewPw] = useState(false)
   const [isChangingPw, setIsChangingPw] = useState(false)
+  const [isSettingPw, setIsSettingPw] = useState(false)
+  const [showSetNewPw, setShowSetNewPw] = useState(false)
 
   const {
-    register,
-    handleSubmit,
+    register: registerChange,
+    handleSubmit: handleSubmitChange,
     reset: resetPwForm,
-    formState: { errors },
+    formState: { errors: changeErrors },
   } = useForm<ChangePasswordInput>({ resolver: zodResolver(changePasswordSchema) })
+
+  const {
+    register: registerSet,
+    handleSubmit: handleSubmitSet,
+    reset: resetSetForm,
+    formState: { errors: setErrors },
+  } = useForm<SetPasswordInput>({ resolver: zodResolver(setPasswordSchema) })
 
   useEffect(() => {
     if (!session) return
@@ -48,7 +74,7 @@ export default function SecuritySettingsPage() {
   }, [session])
 
   const twoFactorEnabled = profile?.twoFactorAuth?.enabled ?? false
-  const hasPassword = !!profile?.hashedPassword
+  const hasPassword = profile?.hasPassword ?? false
 
   const handleDisable2FA = async () => {
     setDisabling2FA(true)
@@ -87,6 +113,26 @@ export default function SecuritySettingsPage() {
       toast.error("Failed to change password")
     } finally {
       setIsChangingPw(false)
+    }
+  }
+
+  const handleSetPassword = async (data: SetPasswordInput) => {
+    setIsSettingPw(true)
+    try {
+      const res = await fetch("/api/user/change-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+      })
+      const json = await res.json()
+      if (!res.ok) { toast.error(json.error); return }
+      toast.success("Password set successfully! You can now sign in with email & password.")
+      setProfile((p) => p ? { ...p, hasPassword: true } : p)
+      resetSetForm()
+    } catch {
+      toast.error("Failed to set password")
+    } finally {
+      setIsSettingPw(false)
     }
   }
 
@@ -182,7 +228,55 @@ export default function SecuritySettingsPage() {
         )}
       </motion.div>
 
-      {/* Change Password */}
+      {/* Set Password (for OAuth-only users) */}
+      {!hasPassword && (
+        <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }} className="p-6 rounded-xl border bg-card space-y-4">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-full bg-blue-500/10 flex items-center justify-center">
+              <KeyRound className="w-5 h-5 text-blue-400" />
+            </div>
+            <div>
+              <h2 className="font-semibold">Set a password</h2>
+              <p className="text-xs text-muted-foreground">Add a password so you can also sign in with email &amp; password</p>
+            </div>
+          </div>
+
+          <form onSubmit={handleSubmitSet(handleSetPassword)} className="space-y-3">
+            <div className="space-y-1.5">
+              <Label className="text-sm">New password</Label>
+              <div className="relative">
+                <Input
+                  type={showSetNewPw ? "text" : "password"}
+                  className="bg-muted/50 pr-10"
+                  placeholder="At least 8 characters"
+                  {...registerSet("newPassword")}
+                />
+                <button type="button" onClick={() => setShowSetNewPw(!showSetNewPw)} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
+                  {showSetNewPw ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+              {setErrors.newPassword && <p className="text-xs text-red-400">{setErrors.newPassword.message}</p>}
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-sm">Confirm password</Label>
+              <Input type="password" className="bg-muted/50" placeholder="Repeat your password" {...registerSet("confirmPassword")} />
+              {setErrors.confirmPassword && <p className="text-xs text-red-400">{setErrors.confirmPassword.message}</p>}
+            </div>
+
+            <Button
+              type="submit"
+              disabled={isSettingPw}
+              className="bg-gradient-to-r from-blue-600 to-violet-600 hover:from-blue-500 hover:to-violet-500 text-white border-0"
+            >
+              {isSettingPw ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
+              Set password
+            </Button>
+          </form>
+        </motion.div>
+      )}
+
+      {/* Change Password (for users with existing password) */}
       {hasPassword && (
         <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }} className="p-6 rounded-xl border bg-card space-y-4">
           <div className="flex items-center gap-3">
@@ -195,20 +289,20 @@ export default function SecuritySettingsPage() {
             </div>
           </div>
 
-          <form onSubmit={handleSubmit(handleChangePassword)} className="space-y-3">
+          <form onSubmit={handleSubmitChange(handleChangePassword)} className="space-y-3">
             <div className="space-y-1.5">
               <Label className="text-sm">Current password</Label>
               <div className="relative">
                 <Input
                   type={showCurrentPw ? "text" : "password"}
                   className="bg-muted/50 pr-10"
-                  {...register("currentPassword")}
+                  {...registerChange("currentPassword")}
                 />
                 <button type="button" onClick={() => setShowCurrentPw(!showCurrentPw)} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
                   {showCurrentPw ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </button>
               </div>
-              {errors.currentPassword && <p className="text-xs text-red-400">{errors.currentPassword.message}</p>}
+              {changeErrors.currentPassword && <p className="text-xs text-red-400">{changeErrors.currentPassword.message}</p>}
             </div>
 
             <div className="space-y-1.5">
@@ -217,19 +311,19 @@ export default function SecuritySettingsPage() {
                 <Input
                   type={showNewPw ? "text" : "password"}
                   className="bg-muted/50 pr-10"
-                  {...register("newPassword")}
+                  {...registerChange("newPassword")}
                 />
                 <button type="button" onClick={() => setShowNewPw(!showNewPw)} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
                   {showNewPw ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </button>
               </div>
-              {errors.newPassword && <p className="text-xs text-red-400">{errors.newPassword.message}</p>}
+              {changeErrors.newPassword && <p className="text-xs text-red-400">{changeErrors.newPassword.message}</p>}
             </div>
 
             <div className="space-y-1.5">
               <Label className="text-sm">Confirm new password</Label>
-              <Input type="password" className="bg-muted/50" {...register("confirmPassword")} />
-              {errors.confirmPassword && <p className="text-xs text-red-400">{errors.confirmPassword.message}</p>}
+              <Input type="password" className="bg-muted/50" {...registerChange("confirmPassword")} />
+              {changeErrors.confirmPassword && <p className="text-xs text-red-400">{changeErrors.confirmPassword.message}</p>}
             </div>
 
             <Button

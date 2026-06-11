@@ -22,15 +22,22 @@ export async function GET() {
         tier: true,
         role: true,
         emailVerified: true,
+        hashedPassword: true,
         createdAt: true,
         twoFactorAuth: { select: { enabled: true } },
+        accounts: { select: { provider: true, providerAccountId: true } },
         _count: { select: { apiKeys: { where: { revokedAt: null } } } },
       },
     })
 
     if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 })
 
-    return NextResponse.json(user)
+    // Transform: never expose the actual password hash — only a boolean flag
+    const { hashedPassword, ...rest } = user
+    return NextResponse.json({
+      ...rest,
+      hasPassword: !!hashedPassword,
+    })
   } catch (error) {
     console.error("[GET_PROFILE]", error)
     return NextResponse.json({ error: "Internal server error" }, { status: 500 })

@@ -729,6 +729,8 @@ interface WorkspaceStore {
   writeFile: (workspaceId: string, path: string, content: string) => void;
   deleteFile: (workspaceId: string, path: string) => void;
   renameFile: (workspaceId: string, oldPath: string, newPath: string) => void;
+  /** Replace the entire file set (used to restore a checkpoint). Prunes dangling tabs. */
+  replaceFiles: (workspaceId: string, files: WorkspaceFile[]) => void;
   openTab: (workspaceId: string, path: string) => void;
   closeTab: (workspaceId: string, path: string) => void;
   setActive: (workspaceId: string, path: string | null) => void;
@@ -801,6 +803,16 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
               activePath: w.activePath === oldPath ? newPath : w.activePath,
               updatedAt: Date.now(),
             };
+          }),
+        })),
+      replaceFiles: (workspaceId, files) =>
+        set((s) => ({
+          workspaces: s.workspaces.map((w) => {
+            if (w.id !== workspaceId) return w;
+            const paths = new Set(files.map((f) => f.path));
+            const openTabs = w.openTabs.filter((p) => paths.has(p));
+            const activePath = w.activePath && paths.has(w.activePath) ? w.activePath : openTabs[0] ?? files[0]?.path ?? null;
+            return { ...w, files: files.map((f) => ({ ...f })), openTabs, activePath, updatedAt: Date.now() };
           }),
         })),
       openTab: (workspaceId, path) =>

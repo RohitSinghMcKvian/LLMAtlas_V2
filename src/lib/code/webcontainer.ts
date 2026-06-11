@@ -81,6 +81,11 @@ export async function mountWorkspace(workspaceId: string, files: WorkspaceFile[]
   return wc;
 }
 
+/** Force the next mountWorkspace() to re-mount from scratch (e.g. after a checkpoint revert). */
+export function resetContainerMount(): void {
+  mountedWorkspaceId = null;
+}
+
 /** Sync a single file from the editor into the WebContainer FS. */
 export async function syncFile(path: string, content: string): Promise<void> {
   if (!booted) return;
@@ -91,6 +96,24 @@ export async function syncFile(path: string, content: string): Promise<void> {
     try { await booted.fs.mkdir(dir, { recursive: true }); } catch {}
   }
   await booted.fs.writeFile(path, content);
+}
+
+/** Remove a file (or directory) from the WebContainer FS. No-ops if not booted. */
+export async function removeFile(path: string): Promise<void> {
+  if (!booted) return;
+  try { await booted.fs.rm(path, { recursive: true }); } catch {}
+}
+
+/**
+ * Mirror the entire workspace file set into the WebContainer FS. Used by the agent
+ * before running a command so shell processes always see the agent's latest edits.
+ * Booting/mounting must have happened first (see mountWorkspace).
+ */
+export async function syncWorkspaceToContainer(files: WorkspaceFile[]): Promise<void> {
+  if (!booted) return;
+  for (const f of files) {
+    await syncFile(f.path, f.content);
+  }
 }
 
 export interface SpawnResult {

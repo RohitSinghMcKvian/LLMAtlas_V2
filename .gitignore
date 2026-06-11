@@ -15,3 +15,5 @@ prisma/dev.db
 prisma/*.db-journal
 # Temporary test files
 .tmp-test/
+
+.vercel

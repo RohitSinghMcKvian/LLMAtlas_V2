@@ -10,7 +10,7 @@ export const updateProfileSchema = z.object({
     .optional()
     .or(z.literal("")),
   bio: z.string().max(160, "Bio can't exceed 160 characters").optional().or(z.literal("")),
-  image: z.string().url("Invalid image URL").optional().or(z.literal("")),
+  image: z.string().optional().or(z.literal("")),
 })
 
 export const updateSettingsSchema = z.object({

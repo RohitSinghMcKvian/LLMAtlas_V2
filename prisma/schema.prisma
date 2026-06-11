@@ -16,10 +16,13 @@ model User {
   image          String?
   bio            String?
   hashedPassword String?
-  role           String    @default("USER")
-  tier           String    @default("FREE")
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+  role                String    @default("USER")
+  tier                String    @default("FREE")
+  failedLoginAttempts Int       @default(0)
+  lockedUntil         DateTime?
+  tokenVersion        Int       @default(0)
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
 
   accounts            Account[]
   sessions            Session[]

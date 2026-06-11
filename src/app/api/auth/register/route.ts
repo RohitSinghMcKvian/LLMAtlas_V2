@@ -3,10 +3,16 @@ import bcrypt from "bcryptjs"
 import crypto from "crypto"
 import { db } from "@/lib/db"
 import { registerSchema } from "@/lib/validations/auth"
-import { sendVerificationEmail } from "@/lib/email"
+import { trySendEmail, sendVerificationEmail } from "@/lib/email"
+import { rateLimit, getClientIP, rateLimitResponse } from "@/lib/rate-limit"
 
 export async function POST(req: Request) {
   try {
+    // Rate limit: 5 registrations per IP per 15 minutes
+    const ip = getClientIP(req)
+    const rl = rateLimit(`register:${ip}`, 5, 15 * 60 * 1000)
+    if (!rl.success) return rateLimitResponse(rl.resetAt)
+
     const body = await req.json()
     const parsed = registerSchema.safeParse(body)
 
@@ -38,20 +44,16 @@ export async function POST(req: Request) {
       },
     })
 
-    // Send verification email
-    try {
-      const token = crypto.randomBytes(32).toString("hex")
-      await db.verificationToken.create({
-        data: {
-          userId: user.id,
-          token,
-          expires: new Date(Date.now() + 24 * 60 * 60 * 1000),
-        },
-      })
-      await sendVerificationEmail(email, token)
-    } catch {
-      // Non-fatal: user can request re-send later
-    }
+    // Send verification email (non-fatal — user can resend later)
+    const token = crypto.randomBytes(32).toString("hex")
+    await db.verificationToken.create({
+      data: {
+        userId: user.id,
+        token,
+        expires: new Date(Date.now() + 24 * 60 * 60 * 1000),
+      },
+    })
+    await trySendEmail(() => sendVerificationEmail(email, token))
 
     return NextResponse.json({ success: true }, { status: 201 })
   } catch (error) {

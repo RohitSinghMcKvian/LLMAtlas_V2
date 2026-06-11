@@ -5,6 +5,9 @@
 // the client executes the tool and streams back a tool_result.
 
 import { useWorkspaceStore, type Workspace, type WorkspaceFile } from "@/lib/store";
+import { runCommand, detectTestCommand } from "@/lib/code/agent-runtime";
+import { syncFile, removeFile } from "@/lib/code/webcontainer";
+import { useAgentStore, type PlanStep, type PlanStepStatus } from "@/lib/code/agent-store";
 
 export interface ToolDefinition {
   name: string;
@@ -89,11 +92,54 @@ export const AGENT_TOOLS: ToolDefinition[] = [
   },
   {
     name: "run_bash",
-    description: "Execute a shell command. Currently echoes the command and returns a stub — WebContainer wiring lands when COOP/COEP headers are enabled.",
+    description: "Execute a shell command in the workspace runtime (Node via WebContainer, or Python via Pyodide) and return combined stdout/stderr plus the exit code. Use this to install deps, run scripts, start builds, and verify your work. The command sees your latest file edits.",
     parameters: {
       type: "object",
       properties: { command: { type: "string" } },
       required: ["command"],
+    },
+  },
+  {
+    name: "run_tests",
+    description: "Detect and run the project's test command (npm test, or pytest for Python) and report pass/fail with output. Prefer this over run_bash for testing. Returns a non-zero exit code when tests fail so you know to fix and re-run.",
+    parameters: { type: "object", properties: {} },
+  },
+  {
+    name: "update_plan",
+    description: "Create or update the visible task checklist for this job. Call this first to outline your approach, then call it again to mark steps in_progress/done as you work. Keeps the user oriented.",
+    parameters: {
+      type: "object",
+      properties: {
+        steps: {
+          type: "array",
+          description: "Ordered list of plan steps.",
+          items: {
+            type: "object",
+            properties: {
+              text: { type: "string" },
+              status: { type: "string", enum: ["pending", "in_progress", "done"] },
+            },
+            required: ["text"],
+          },
+        },
+      },
+      required: ["steps"],
+    },
+  },
+  {
+    name: "generate_docs",
+    description: "Return a README scaffold derived from package.json scripts/dependencies and the file tree. Read it, refine it for this project, then write it with write_file. Read-only — does not write any file itself.",
+    parameters: { type: "object", properties: {} },
+  },
+  {
+    name: "git",
+    description: "Run a git command (init, add, commit, log, diff, status, branch, checkout). Operates on the workspace's WebContainer filesystem. Use run_bash for non-git shell commands.",
+    parameters: {
+      type: "object",
+      properties: {
+        args: { type: "string", description: "Arguments to git, e.g. 'init', 'add .', 'commit -m \"initial\"', 'log --oneline -5'" },
+      },
+      required: ["args"],
     },
   },
 ];
@@ -109,7 +155,7 @@ export type ToolResult =
   | { ok: false; error: string };
 
 /** Tools that mutate the workspace — gated through the approval flow. */
-export const MUTATING_TOOLS = new Set(["write_file", "edit_file", "delete_file", "run_bash"]);
+export const MUTATING_TOOLS = new Set(["write_file", "edit_file", "delete_file", "run_bash", "git"]);
 
 export function isMutatingTool(name: string): boolean {
   return MUTATING_TOOLS.has(name);
@@ -198,7 +244,11 @@ function globToRegex(glob: string): RegExp {
   return new RegExp("^" + escaped + "$");
 }
 
-export async function executeTool(workspaceId: string, call: ToolCall): Promise<ToolResult> {
+export async function executeTool(
+  workspaceId: string,
+  call: ToolCall,
+  onChunk?: (s: string) => void,
+): Promise<ToolResult> {
   const ws = getWorkspace(workspaceId);
   if (!ws) return { ok: false, error: "workspace not found" };
   const store = useWorkspaceStore.getState();
@@ -218,6 +268,7 @@ export async function executeTool(workspaceId: string, call: ToolCall): Promise<
         const path = call.args.path as string;
         const content = call.args.content as string;
         store.writeFile(workspaceId, path, content);
+        await syncFile(path, content); // mirror into the WebContainer FS so run_bash sees it
         return { ok: true, output: `wrote ${path} (${content.length} bytes)` };
       }
       case "edit_file": {
@@ -229,12 +280,15 @@ export async function executeTool(workspaceId: string, call: ToolCall): Promise<
         const occurrences = f.content.split(oldStr).length - 1;
         if (occurrences === 0) return { ok: false, error: "old_str not found" };
         if (occurrences > 1) return { ok: false, error: `old_str appears ${occurrences} times — make it more specific` };
-        store.writeFile(workspaceId, path, f.content.replace(oldStr, newStr));
+        const updated = f.content.replace(oldStr, newStr);
+        store.writeFile(workspaceId, path, updated);
+        await syncFile(path, updated);
         return { ok: true, output: `edited ${path}` };
       }
       case "delete_file": {
         const path = call.args.path as string;
         store.deleteFile(workspaceId, path);
+        await removeFile(path);
         return { ok: true, output: `deleted ${path}` };
       }
       case "glob": {
@@ -263,7 +317,40 @@ export async function executeTool(workspaceId: string, call: ToolCall): Promise<
       }
       case "run_bash": {
         const command = call.args.command as string;
-        return { ok: true, output: `[stub] ran: ${command}\n(WebContainer execution arrives in Phase 4.1 when COOP/COEP headers ship)` };
+        const r = await runCommand(workspaceId, command, onChunk);
+        return { ok: true, output: `$ ${command}\n${r.output}\n[exit ${r.exitCode}]` };
+      }
+      case "run_tests": {
+        const cmd = detectTestCommand(ws);
+        if (!cmd) {
+          return { ok: false, error: "No test command found. Add a 'test' script to package.json or create test_*.py files, then retry." };
+        }
+        const r = await runCommand(workspaceId, cmd, onChunk);
+        return { ok: true, output: `$ ${cmd}\n${r.output}\n[exit ${r.exitCode}]` };
+      }
+      case "update_plan": {
+        const raw = (call.args.steps ?? call.args.plan ?? []) as Array<{ text?: string; step?: string; status?: string }>;
+        const steps: PlanStep[] = raw
+          .map((s) => ({
+            id: crypto.randomUUID(),
+            text: String(s.text ?? s.step ?? "").slice(0, 240),
+            status: (s.status === "done" || s.status === "in_progress" ? s.status : "pending") as PlanStepStatus,
+          }))
+          .filter((s) => s.text);
+        useAgentStore.getState().setPlan(workspaceId, steps);
+        return { ok: true, output: `plan updated — ${steps.length} step${steps.length === 1 ? "" : "s"}` };
+      }
+      case "generate_docs": {
+        return { ok: true, output: buildReadmeScaffold(ws) };
+      }
+      case "git": {
+        const args = (call.args.args as string) ?? "";
+        const ALLOWED = /^(init|add|commit|log|diff|status|branch|checkout|show|tag|remote|config)\b/;
+        if (!ALLOWED.test(args.trim())) {
+          return { ok: false, error: `git: only safe read/commit commands are allowed. Blocked: git ${args}` };
+        }
+        const r = await runCommand(workspaceId, `git ${args}`, onChunk);
+        return { ok: true, output: `$ git ${args}\n${r.output}\n[exit ${r.exitCode}]` };
       }
       default:
         return { ok: false, error: `unknown tool: ${call.name}` };
@@ -276,6 +363,55 @@ export async function executeTool(workspaceId: string, call: ToolCall): Promise<
 export function workspaceSummary(ws: Workspace): string {
   const tree = ws.files.map((f) => `  ${f.path} (${f.content.split("\n").length} lines)`).join("\n");
   return `Workspace "${ws.name}" (${ws.runtime}):\n${tree || "  (empty)"}`;
+}
+
+/** Build a README skeleton from package.json scripts/deps + file tree (used by generate_docs). */
+export function buildReadmeScaffold(ws: Workspace): string {
+  const pkg = ws.files.find((f) => f.path === "package.json");
+  let name = ws.name;
+  let scripts: Record<string, string> = {};
+  let deps: string[] = [];
+  if (pkg) {
+    try {
+      const p = JSON.parse(pkg.content) as { name?: string; scripts?: Record<string, string>; dependencies?: Record<string, string> };
+      if (p.name) name = p.name;
+      scripts = p.scripts ?? {};
+      deps = Object.keys(p.dependencies ?? {});
+    } catch { /* ignore malformed package.json */ }
+  }
+  const scriptLines = Object.entries(scripts).map(([k, v]) => `- \`npm run ${k}\` — ${v}`).join("\n") || "- _(no scripts defined)_";
+  const tree = ws.files.map((f) => `- \`${f.path}\``).slice(0, 40).join("\n");
+  const runHint = ws.runtime === "python"
+    ? "python main.py"
+    : scripts.dev ? "npm install && npm run dev"
+    : scripts.start ? "npm install && npm start"
+    : "npm install";
+  return `# ${name}
+
+> One-line description of what this project does. _(replace me)_
+
+## Overview
+
+Describe the purpose, key features, and intended audience. _(replace me)_
+
+## Getting started
+
+\`\`\`bash
+${runHint}
+\`\`\`
+
+## Scripts
+
+${scriptLines}
+
+${deps.length ? `## Dependencies\n\n${deps.map((d) => `- ${d}`).join("\n")}\n\n` : ""}## Project structure
+
+${tree}
+
+## License
+
+MIT _(replace me)_
+`;
 }
 
 export const WORKSPACE_TEMPLATES: Array<{

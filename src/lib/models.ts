@@ -1,6 +1,6 @@
 // Comprehensive LLM catalogue — 195+ models across 13 providers.
 // All accessible via free-tier or low-cost APIs.
-// Updated: 2026-05 — includes Kimi K2, DeepSeek V4, Qwen3, Gemini 2.5, Llama 4.
+// Updated: 2026-06 — includes Nemotron 3 Ultra, Kimi K2, DeepSeek V4, Qwen3, Gemini 2.5, Llama 4.
 
 export type ProviderId =
   | "groq"
@@ -247,6 +247,17 @@ export const MODELS: ModelSpec[] = [
     tags: ["chat", "vision", "moe", "efficient"],
   },
   // NVIDIA (via OpenRouter)
+  {
+    id: "or-nemotron3-ultra-free",
+    name: "Nemotron 3 Ultra (free)",
+    vendor: "Nvidia", provider: "openrouter",
+    providerModel: "nvidia/nemotron-3-ultra:free",
+    context: 131_072, inputPrice: 0, outputPrice: 0, free: true, openSource: true,
+    modalities: ["text", "code"], released: "2025-06", benchmark: 93, speedScore: 55,
+    description: "NVIDIA Nemotron 3 Ultra — 253B flagship, top-tier reasoning & code, free on OpenRouter.",
+    tags: ["frontier", "frontier-free", "reasoning", "code", "nemotron", "chat"],
+    fallbacks: ["or-nemotron3-super-120b-free", "groq-llama-3.3-70b"],
+  },
   {
     id: "or-nemotron3-super-120b-free",
     name: "Nemotron 3 Super 120B (free)",
@@ -1218,6 +1229,19 @@ export const MODELS: ModelSpec[] = [
     tags: ["frontier-free", "moe", "vision", "long-context"],
   },
 
+  // NVIDIA family
+  {
+    id: "gh-nemotron3-ultra",
+    name: "Nemotron 3 Ultra (free via GitHub)",
+    vendor: "Nvidia", provider: "github-models",
+    providerModel: "nvidia/nemotron-3-ultra",
+    context: 131_072, inputPrice: 0, outputPrice: 0, free: true, openSource: true,
+    modalities: ["text", "code"], released: "2025-06", benchmark: 93, speedScore: 55,
+    description: "NVIDIA Nemotron 3 Ultra — 253B flagship with elite reasoning & code, free via GitHub PAT.",
+    tags: ["frontier-free", "frontier", "reasoning", "code", "nemotron", "chat"],
+    fallbacks: ["gh-llama-4-maverick", "groq-llama-3.3-70b"],
+  },
+
   // Mistral family
   {
     id: "gh-mistral-large",
@@ -1418,6 +1442,18 @@ export const MODELS: ModelSpec[] = [
     description: "OpenAI large tier with reasoning — keyless via Pollinations.",
     tags: ["frontier-free", "keyless", "reasoning", "vision"],
     fallbacks: ["groq-llama-3.3-70b", "cerebras-gpt-oss-120b"],
+  },
+  // NVIDIA
+  {
+    id: "poll-nemotron3-ultra",
+    name: "Nemotron 3 Ultra (keyless)",
+    vendor: "Nvidia", provider: "pollinations",
+    providerModel: "nemotron-3-ultra",
+    context: 131_072, inputPrice: 0, outputPrice: 0, free: true, openSource: true,
+    modalities: ["text", "code"], released: "2025-06", benchmark: 93, speedScore: 55,
+    description: "NVIDIA Nemotron 3 Ultra — 253B flagship reasoning & code, keyless via Pollinations.",
+    tags: ["frontier-free", "keyless", "frontier", "reasoning", "code", "nemotron"],
+    fallbacks: ["or-nemotron3-ultra-free", "groq-llama-3.3-70b"],
   },
   // DeepSeek
   {
@@ -2065,6 +2101,16 @@ export const MODELS: ModelSpec[] = [
     description: "Qwen 3.6 on NVIDIA NIM — latest Alibaba flagship, free tier.",
     tags: ["frontier", "reasoning", "code", "multilingual"],
   },
+  {
+    id: "nv-nemotron3-ultra",
+    name: "Nemotron 3 Ultra (NVIDIA)",
+    vendor: "Nvidia", provider: "nvidia",
+    providerModel: "nvidia/nemotron-3-ultra",
+    context: 131_072, inputPrice: 0, outputPrice: 0, free: true, openSource: true,
+    modalities: ["text", "code"], released: "2025-06", benchmark: 93, speedScore: 55,
+    description: "NVIDIA Nemotron 3 Ultra — 253B parameter flagship, best-in-class reasoning & code generation, free on NIM.",
+    tags: ["frontier", "reasoning", "code", "nemotron", "chat", "math"],
+  },
 
   // ─── NEW TOGETHER AI MODELS ──────────────────────────────────────────────────
   {
@@ -2190,7 +2236,7 @@ export function requiresApiKey(m: ModelSpec | undefined): boolean {
 /** Tool/function-calling support. Derived from provider + tags. */
 export function supportsTools(m: ModelSpec | undefined): boolean {
   if (!m) return false;
-  const TOOL_PROVIDERS: ProviderId[] = ["groq", "openrouter", "together", "cerebras", "mistral", "google", "github-models", "xai", "deepseek"];
+  const TOOL_PROVIDERS: ProviderId[] = ["groq", "openrouter", "together", "cerebras", "mistral", "google", "github-models", "xai", "deepseek", "nvidia"];
   if (!TOOL_PROVIDERS.includes(m.provider)) return false;
   // Exclude obviously incapable tiny models.
   if (m.tags.includes("tiny") || m.tags.includes("embedding")) return false;
