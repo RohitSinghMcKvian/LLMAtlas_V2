@@ -64,6 +64,43 @@ export const useProgressStore = create<ProgressStore>()(
   ),
 );
 
+// -------- MCP servers (Atlas Brain external tools) -------------------------
+/** A Model Context Protocol server the agent can pull tools from. */
+export interface McpServerConfig {
+  id: string;
+  /** Display name, also used to namespace tools: mcp__<name>__<tool>. */
+  name: string;
+  /** Streamable-HTTP / SSE endpoint URL (remote MCP server). */
+  url: string;
+  /** Optional Authorization header value, e.g. "Bearer sk-…". Sent server-side only. */
+  authHeader?: string;
+  enabled: boolean;
+  createdAt: number;
+}
+
+// -------- Web tools (Atlas Brain real-world reach) -------------------------
+export type WebSearchProvider = "duckduckgo" | "tavily" | "brave" | "searxng";
+
+/** Config for the agent's web_search / fetch_url / browse tools. */
+export interface WebToolsConfig {
+  /** Master switch — registers web_search + fetch_url when on. */
+  enabled: boolean;
+  searchProvider: WebSearchProvider;
+  /** Optional provider keys (sent server-side only; DuckDuckGo needs none). */
+  tavilyKey?: string;
+  braveKey?: string;
+  searxngUrl?: string;
+  /** Registers the (heavier) browse tool; needs an external Playwright service. */
+  browseEnabled: boolean;
+  browseServiceUrl?: string;
+}
+
+export const DEFAULT_WEB_TOOLS: WebToolsConfig = {
+  enabled: false,
+  searchProvider: "duckduckgo",
+  browseEnabled: false,
+};
+
 // -------- BYOK settings ----------------------------------------------------
 interface SettingsStore {
   keys: Partial<Record<ProviderId, string>>;
@@ -71,6 +108,12 @@ interface SettingsStore {
   clearKey: (provider: ProviderId) => void;
   defaultModel: string;
   setDefaultModel: (id: string) => void;
+  mcpServers: McpServerConfig[];
+  addMcpServer: (input: { name: string; url: string; authHeader?: string }) => McpServerConfig;
+  updateMcpServer: (id: string, patch: Partial<Omit<McpServerConfig, "id" | "createdAt">>) => void;
+  removeMcpServer: (id: string) => void;
+  webTools: WebToolsConfig;
+  setWebTools: (patch: Partial<WebToolsConfig>) => void;
 }
 
 export const useSettingsStore = create<SettingsStore>()(
@@ -87,6 +130,27 @@ export const useSettingsStore = create<SettingsStore>()(
         }),
       defaultModel: "groq-llama-3.3-70b",
       setDefaultModel: (id) => set({ defaultModel: id }),
+      mcpServers: [],
+      addMcpServer: ({ name, url, authHeader }) => {
+        const server: McpServerConfig = {
+          id: nanoid(8),
+          name: name.trim(),
+          url: url.trim(),
+          authHeader: authHeader?.trim() || undefined,
+          enabled: true,
+          createdAt: Date.now(),
+        };
+        set((s) => ({ mcpServers: [...s.mcpServers, server] }));
+        return server;
+      },
+      updateMcpServer: (id, patch) =>
+        set((s) => ({
+          mcpServers: s.mcpServers.map((m) => (m.id === id ? { ...m, ...patch } : m)),
+        })),
+      removeMcpServer: (id) =>
+        set((s) => ({ mcpServers: s.mcpServers.filter((m) => m.id !== id) })),
+      webTools: DEFAULT_WEB_TOOLS,
+      setWebTools: (patch) => set((s) => ({ webTools: { ...s.webTools, ...patch } })),
     }),
     { name: "llmatlas-settings", storage: createJSONStorage(() => localStorage) },
   ),
@@ -183,7 +247,22 @@ export interface ChatTurn {
 }
 
 // -------- artifact store ---------------------------------------------------
-export type ArtifactKind = "html" | "react" | "svg" | "mermaid" | "markdown" | "code";
+export type ArtifactKind =
+  | "html"
+  | "react"
+  | "svg"
+  | "mermaid"
+  | "markdown"
+  | "code"
+  // Ultra-Capability renderers (PDF, charts, 3D, audio, maps, spreadsheets…)
+  | "pdf"
+  | "chart"
+  | "three"
+  | "audio"
+  | "map"
+  | "spreadsheet"
+  | "mindmap"
+  | "whiteboard";
 
 export interface ArtifactVersion {
   id: string;

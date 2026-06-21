@@ -17,6 +17,10 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useSettingsStore } from "@/lib/store";
 import { PROVIDERS, type ProviderId } from "@/lib/models";
+import { McpServersPanel } from "@/components/settings/mcp-servers";
+import { MemoryPanel } from "@/components/settings/memory-panel";
+import { WebToolsPanel } from "@/components/settings/web-tools";
+import { SkillsPanel } from "@/components/settings/skills-panel";
 
 const ACCOUNT_LINKS = [
   { href: "/settings/profile", icon: User, label: "Profile", description: "Name, username, avatar, bio" },
@@ -129,6 +133,14 @@ export default function SettingsPage() {
           ))}
         </CardContent>
       </Card>
+
+      <McpServersPanel />
+
+      <SkillsPanel className="mt-6" />
+
+      <WebToolsPanel className="mt-6" />
+
+      <MemoryPanel className="mt-6" />
 
       <Card className="mt-6">
         <CardHeader>

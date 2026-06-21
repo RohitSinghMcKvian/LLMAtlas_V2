@@ -5,6 +5,7 @@ import {
   Copy, Download, X, History, Check, FileCode2, FileText, Image as ImageIcon,
   GitBranch, ExternalLink, RefreshCw, Maximize2, Minimize2, Monitor, Tablet,
   Smartphone, Terminal, ChevronLeft, ChevronRight, AlertCircle, Trash2,
+  BarChart3, Box, FileSpreadsheet, FileType, Map as MapIcon, Music, Network, PenSquare,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -20,6 +21,14 @@ import { MarkdownRenderer } from "./artifact-renderers/markdown-renderer";
 import { CodeRenderer } from "./artifact-renderers/code-renderer";
 import { ReactRenderer } from "./artifact-renderers/react-renderer";
 import { buildReactSrcdoc } from "./artifact-renderers/build-react-srcdoc";
+import { ChartRenderer } from "./artifact-renderers/chart-renderer";
+import { PdfRenderer } from "./artifact-renderers/pdf-renderer";
+import { ThreeRenderer } from "./artifact-renderers/three-renderer";
+import { AudioRenderer } from "./artifact-renderers/audio-renderer";
+import { MapRenderer } from "./artifact-renderers/map-renderer";
+import { SpreadsheetRenderer } from "./artifact-renderers/spreadsheet-renderer";
+import { MindmapRenderer } from "./artifact-renderers/mindmap-renderer";
+import { WhiteboardRenderer } from "./artifact-renderers/whiteboard-renderer";
 
 interface Props {
   artifact: Artifact;
@@ -33,12 +42,18 @@ const DEVICE_WIDTH: Record<Device, number | null> = { desktop: null, tablet: 768
 
 const KIND_LABEL: Record<ArtifactKind, string> = {
   html: "HTML", svg: "SVG", mermaid: "Mermaid", markdown: "Markdown", react: "React", code: "Code",
+  pdf: "PDF", chart: "Chart", three: "3D Scene", audio: "Audio", map: "Map",
+  spreadsheet: "Spreadsheet", mindmap: "Mind Map", whiteboard: "Whiteboard",
 };
 const KIND_ICON: Record<ArtifactKind, React.ComponentType<{ className?: string }>> = {
   html: FileCode2, svg: ImageIcon, mermaid: GitBranch, markdown: FileText, react: FileCode2, code: FileCode2,
+  pdf: FileType, chart: BarChart3, three: Box, audio: Music, map: MapIcon,
+  spreadsheet: FileSpreadsheet, mindmap: Network, whiteboard: PenSquare,
 };
 const KIND_EXT: Record<ArtifactKind, string> = {
   html: "html", svg: "svg", mermaid: "mmd", markdown: "md", react: "tsx", code: "txt",
+  pdf: "md", chart: "json", three: "js", audio: "js", map: "json",
+  spreadsheet: "csv", mindmap: "md", whiteboard: "json",
 };
 
 export function ArtifactPanel({ artifact, onClose, onOpenInCode }: Props) {
@@ -67,7 +82,18 @@ export function ArtifactPanel({ artifact, onClose, onOpenInCode }: Props) {
   const Icon = KIND_ICON[artifact.kind];
   const ext = artifact.language || KIND_EXT[artifact.kind];
   const hasPreview = artifact.kind !== "code";
-  const isLivePreview = artifact.kind === "html" || artifact.kind === "react";
+  // "Live preview" surfaces include the new sandboxed iframe renderers — they
+  // emit console output through the bridge and should expose Reload + Console.
+  const isLivePreview =
+    artifact.kind === "html" ||
+    artifact.kind === "react" ||
+    artifact.kind === "chart" ||
+    artifact.kind === "three" ||
+    artifact.kind === "audio" ||
+    artifact.kind === "map" ||
+    artifact.kind === "mindmap" ||
+    artifact.kind === "whiteboard" ||
+    artifact.kind === "pdf";
   const errorCount = useMemo(() => logs.filter((l) => l.level === "error").length, [logs]);
 
   // Collect console + runtime errors forwarded by the HTML/React sandbox bridge.
@@ -120,6 +146,14 @@ export function ArtifactPanel({ artifact, onClose, onOpenInCode }: Props) {
       case "markdown": return <MarkdownRenderer content={content} />;
       case "react": return <ReactRenderer content={content} language={artifact.language} reloadKey={reloadKey} />;
       case "code": return <CodeRenderer content={content} language={artifact.language} />;
+      case "pdf": return <PdfRenderer content={content} reloadKey={reloadKey} />;
+      case "chart": return <ChartRenderer content={content} reloadKey={reloadKey} />;
+      case "three": return <ThreeRenderer content={content} reloadKey={reloadKey} />;
+      case "audio": return <AudioRenderer content={content} reloadKey={reloadKey} />;
+      case "map": return <MapRenderer content={content} reloadKey={reloadKey} />;
+      case "spreadsheet": return <SpreadsheetRenderer content={content} reloadKey={reloadKey} />;
+      case "mindmap": return <MindmapRenderer content={content} reloadKey={reloadKey} />;
+      case "whiteboard": return <WhiteboardRenderer content={content} reloadKey={reloadKey} />;
     }
   }, [artifact.kind, artifact.language, content, reloadKey]);
 
@@ -379,6 +413,14 @@ function mimeForKind(kind: ArtifactKind): string {
     case "svg": return "image/svg+xml";
     case "markdown": return "text/markdown";
     case "mermaid": return "text/plain";
+    case "pdf": return "text/markdown";
+    case "chart":
+    case "map":
+    case "whiteboard": return "application/json";
+    case "three":
+    case "audio": return "text/javascript";
+    case "spreadsheet": return "text/csv";
+    case "mindmap": return "text/markdown";
     case "react":
     case "code":
     default: return "text/plain";

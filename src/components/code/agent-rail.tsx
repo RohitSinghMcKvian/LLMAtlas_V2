@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import {
   Send, Square, Sparkles, ChevronDown, ChevronRight, CheckCircle2, XCircle,
   Terminal as TermIcon, FileCode2, Trash2, Eye, EyeOff, Undo2, Redo2,
-  Command as CommandIcon, Brain,
+  Command as CommandIcon, Brain, Swords, BrainCircuit,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -12,15 +12,24 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { findModel, supportsTools } from "@/lib/models";
-import type { ToolFunction } from "@/lib/providers";
-import { useSettingsStore, useWorkspaceStore, type Workspace } from "@/lib/store";
+import { useSettingsStore, useWorkspaceStore } from "@/lib/store";
 import { parseStreamBuffer } from "@/lib/stream-events";
 import { resetContainerMount } from "@/lib/code/webcontainer";
 import {
-  AGENT_TOOLS, executeTool, workspaceSummary,
-  isMutatingTool, previewMutation,
+  previewMutation,
   type ToolCall, type ToolResult,
 } from "@/lib/code/tools";
+import {
+  executeTool, isMutatingTool, isDynamicTool, allToolDefinitions,
+} from "@/lib/brain/registry";
+import { buildSystemPrompt, agentToolsAsNative } from "@/lib/brain/prompt";
+import { syncAllMcpServers } from "@/lib/brain/mcp";
+import { registerMemoryTools } from "@/lib/brain/memory-tools";
+import { syncWebTools } from "@/lib/brain/web-tools";
+import { recall, formatMemoriesForPrompt, useMemoryStore } from "@/lib/brain/memory";
+import { parseToolCall, findToolBlock, stringifyResult, commandFailed, stripToolBlocks } from "@/lib/brain/parse";
+import { ComparisonArena } from "./comparison-arena";
+import { MemoryOverlay } from "@/components/settings/memory-panel";
 import {
   useAgentStore, EMPTY_MESSAGES, EMPTY_PLAN, EMPTY_CHECKPOINTS,
   type AgentMessage, type AutonomyMode,
@@ -44,18 +53,6 @@ const AGENT_SLASH: Record<string, string> = {
   "/compact": "Summarize the conversation so far in 3-5 concise bullet points, focusing on what was accomplished, what changed, and the current state. Then I will start a new session with this context.",
 };
 
-const AGENT_SYSTEM = `You are an autonomous senior software engineer working inside a browser-based IDE (LLMAtlas Code). You complete coding tasks END-TO-END the way Claude Code does:
-
-1. ANALYZE the request and the existing workspace. Read the relevant files before changing them.
-2. PLAN: call update_plan with a short ordered checklist, and keep it updated (mark steps in_progress → done) as you work.
-3. IMPLEMENT in small, focused edits — write_file for new files, edit_file for surgical changes.
-4. RUN & TEST: use run_bash to install/build and run_tests to execute the suite. Actually run your code — never assume it works.
-5. FIX: when a command or test fails, read the error output, fix the root cause, and re-run. Iterate until it is green.
-6. DOCUMENT: once it works, write/update a README (use generate_docs as a starting point) and add a CLAUDE.md for non-trivial projects.
-7. SUMMARIZE what you changed in a sentence or two.
-
-Rules: always re-read a file before editing it; prefer small edits; the Node runtime is WebContainer (npm works) and Python runs via Pyodide (limited pip). Do not start long-running dev servers inside tests. Keep prose short — the real work goes through the tools.`;
-
 const MAX_TURNS = 30;
 const MAX_FIX_ATTEMPTS = 6;
 const AGENT_MAX_TOKENS = 4096;
@@ -68,67 +65,14 @@ function needsApproval(toolName: string, mode: AutonomyMode): boolean {
   if (mode === "autonomous") return false;
   if (!isMutatingTool(toolName)) return false;
   if (mode === "manual") return true;
-  return toolName === "write_file" || toolName === "edit_file" || toolName === "delete_file";
-}
-
-function agentToolsAsNative(): ToolFunction[] {
-  return AGENT_TOOLS.map((t) => ({
-    type: "function" as const,
-    function: { name: t.name, description: t.description, parameters: t.parameters },
-  }));
-}
-
-function buildSystemPrompt(ws: Workspace, useNativeTools: boolean): string {
-  const toolSection = useNativeTools
-    ? "Call tools using the native function-calling API. Call ONE tool per message — wait for the result before proceeding."
-    : (() => {
-        const toolList = AGENT_TOOLS.map(
-          (t) => `- ${t.name}(${Object.keys((t.parameters as { properties?: Record<string, unknown> }).properties ?? {}).join(", ")}) — ${t.description}`,
-        ).join("\n");
-        return `You have access to these tools:\n${toolList}\n\nTo call a tool, output EXACTLY ONE JSON block on its own, then stop and wait for the result:\n\n\`\`\`tool\n{"name": "read_file", "args": {"path": "src/index.ts"}}\n\`\`\`\n\nCall ONE tool per message. After you receive the result, decide the next step.`;
-      })();
-
-  return `${AGENT_SYSTEM}\n\n${toolSection}\n\nWhen the task is fully complete — implemented, tested, and documented — reply with a short summary and NO tool call.\n\nCurrent workspace state:\n${workspaceSummary(ws)}`;
-}
-
-function parseToolCall(jsonish: string): ToolCall | null {
-  const build = (p: { name?: string; args?: Record<string, unknown> }) =>
-    p.name ? { id: crypto.randomUUID(), name: p.name, args: p.args ?? {} } : null;
-  try {
-    return build(JSON.parse(jsonish));
-  } catch {
-    const m = /\{[\s\S]*\}/.exec(jsonish);
-    if (m) {
-      try { return build(JSON.parse(m[0])); } catch { /* give up */ }
-    }
-    return null;
-  }
-}
-
-function findToolBlock(text: string): { raw: string; json: string } | null {
-  const re = /```(?:tool|json|javascript|js)?\s*\n([\s\S]*?)```/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(text)) !== null) {
-    const body = m[1].trim();
-    if (body.startsWith("{") && /"name"\s*:/.test(body)) {
-      return { raw: m[0], json: body };
-    }
-  }
-  return null;
-}
-
-function stringifyResult(r?: ToolResult): string {
-  if (!r) return "(pending)";
-  if (r.ok) return typeof r.output === "string" ? r.output : JSON.stringify(r.output);
-  return `Error: ${r.error}`;
-}
-
-function commandFailed(call: ToolCall, result: ToolResult): boolean {
-  if (call.name !== "run_bash" && call.name !== "run_tests") return false;
-  if (!result.ok) return true;
-  const out = typeof result.output === "string" ? result.output : "";
-  const m = /\[exit (\d+)\]/.exec(out);
-  return m ? m[1] !== "0" : false;
+  // Smart mode: gate built-in file writes AND every external/dynamic tool
+  // (MCP, web). External-tool mutations are never silently auto-approved.
+  return (
+    isDynamicTool(toolName) ||
+    toolName === "write_file" ||
+    toolName === "edit_file" ||
+    toolName === "delete_file"
+  );
 }
 
 /** Extract <thinking>...</thinking> blocks from assistant messages. */
@@ -144,6 +88,9 @@ export function AgentRail({ workspaceId }: Props) {
   const replaceFiles = useWorkspaceStore((s) => s.replaceFiles);
   const byok = useSettingsStore((s) => s.keys);
   const defaultModel = useSettingsStore((s) => s.defaultModel);
+  const mcpServers = useSettingsStore((s) => s.mcpServers);
+  const webTools = useSettingsStore((s) => s.webTools);
+  const memoryCount = useMemoryStore((s) => s.memories.length);
 
   const mode = useAgentStore((s) => s.mode);
   const setMode = useAgentStore((s) => s.setMode);
@@ -164,6 +111,8 @@ export function AgentRail({ workspaceId }: Props) {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [sessionsOpen, setSessionsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [arenaOpen, setArenaOpen] = useState(false);
+  const [memoryOpen, setMemoryOpen] = useState(false);
   const [showThinking, setShowThinking] = useState(false);
   const [showToolDetails, setShowToolDetails] = useState(true);
   const [undoStack, setUndoStack] = useState<AgentMessage[][]>([]);
@@ -219,6 +168,31 @@ export function AgentRail({ workspaceId }: Props) {
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspaceId]);
+
+  // Connect to configured MCP servers and register their tools into the brain
+  // registry. Re-runs whenever the server list changes (add/remove/toggle).
+  useEffect(() => {
+    if (!mcpServers.some((s) => s.enabled)) return;
+    let cancelled = false;
+    syncAllMcpServers(mcpServers).then((results) => {
+      if (cancelled) return;
+      const failed = results.filter((r) => !r.ok);
+      const tools = results.reduce((n, r) => n + r.toolCount, 0);
+      if (failed.length) {
+        toast.error(`MCP: ${failed.length} server${failed.length === 1 ? "" : "s"} failed to connect`);
+      } else if (tools > 0) {
+        toast.success(`MCP: ${tools} tool${tools === 1 ? "" : "s"} connected`);
+      }
+    });
+    return () => { cancelled = true; };
+  }, [mcpServers]);
+
+  // Register the persistent-memory tools (recall/remember/search_workspace) into
+  // the brain registry once, so the agent can learn and recall across sessions.
+  useEffect(() => { registerMemoryTools(); }, []);
+
+  // Register/clear the web tools (web_search/fetch_url/browse) to match settings.
+  useEffect(() => { syncWebTools(webTools); }, [webTools]);
 
   function commit(next: AgentMessage[]) {
     convoRef.current = next;
@@ -460,7 +434,22 @@ export function AgentRail({ workspaceId }: Props) {
     setStats({ ...statsRef.current });
     let fixAttempts = 0;
     const useNativeTools = supportsTools(model);
-    const nativeTools = useNativeTools ? agentToolsAsNative() : undefined;
+    const toolDefs = allToolDefinitions();
+    const nativeTools = useNativeTools ? agentToolsAsNative(toolDefs) : undefined;
+
+    // Recall relevant memories once and inject them into the system prompt for
+    // this run (best-effort — memory never blocks the agent).
+    let memoryContext = "";
+    const memState = useMemoryStore.getState();
+    if (memState.autoInject && memState.memories.length > 0) {
+      try {
+        const hits = await recall(prompt, memState.injectK);
+        if (hits.length) {
+          memoryContext = formatMemoriesForPrompt(hits);
+          memState.bumpUsage(hits.map((h) => h.memory.id));
+        }
+      } catch { /* ignore — proceed without memory */ }
+    }
 
     try {
       for (let turn = 0; turn < MAX_TURNS; turn++) {
@@ -469,7 +458,7 @@ export function AgentRail({ workspaceId }: Props) {
         commit([...convoRef.current, { id: placeholderId, role: "assistant", content: "", createdAt: Date.now() }]);
 
         const apiMessages = [
-          { role: "system" as const, content: buildSystemPrompt(ws, useNativeTools) },
+          { role: "system" as const, content: buildSystemPrompt(ws, useNativeTools, toolDefs, memoryContext) },
           ...convoRef.current
             .filter((m) => m.id !== placeholderId)
             .map((m) => ({
@@ -513,7 +502,7 @@ export function AgentRail({ workspaceId }: Props) {
         const toolMatch = findToolBlock(finalText);
         if (!toolMatch) break;
 
-        const displayText = finalText.replace(/```(?:tool|json|javascript|js)?\s*\n[\s\S]*?```/g, "").trim();
+        const displayText = stripToolBlocks(finalText);
         commit(convoRef.current.map((m) => (m.id === placeholderId ? { ...m, content: displayText } : m)));
 
         const call = parseToolCall(toolMatch.json);
@@ -589,6 +578,23 @@ export function AgentRail({ workspaceId }: Props) {
           className="text-[11px] text-muted-foreground hover:text-foreground inline-flex items-center gap-1 shrink-0"
         >
           <CommandIcon className="h-3 w-3" />
+        </button>
+        <button
+          onClick={() => setArenaOpen(true)}
+          title="Comparison Arena — race this task across models"
+          className="text-[11px] text-violet-400 hover:text-violet-300 inline-flex items-center gap-1 shrink-0 font-medium"
+        >
+          <Swords className="h-3 w-3" /> Arena
+        </button>
+        <button
+          onClick={() => setMemoryOpen(true)}
+          title="Agent memory — what it remembers across sessions"
+          className="text-[11px] text-muted-foreground hover:text-foreground inline-flex items-center gap-1 shrink-0"
+        >
+          <BrainCircuit className="h-3 w-3" /> Memory
+          {memoryCount > 0 && (
+            <span className="px-1 rounded bg-violet-500/20 text-violet-300 text-[9px] font-medium">{memoryCount}</span>
+          )}
         </button>
         <AgentModelSelector className="ml-auto" />
       </div>
@@ -747,6 +753,8 @@ export function AgentRail({ workspaceId }: Props) {
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} commands={paletteCommands} />
       <SessionManager open={sessionsOpen} onClose={() => setSessionsOpen(false)} workspaceId={workspaceId} onRestore={handleRestoreSession} />
       <HelpDialog open={helpOpen} onClose={() => setHelpOpen(false)} />
+      <ComparisonArena open={arenaOpen} onClose={() => setArenaOpen(false)} workspaceId={workspaceId} />
+      <MemoryOverlay open={memoryOpen} onClose={() => setMemoryOpen(false)} />
     </div>
   );
 }

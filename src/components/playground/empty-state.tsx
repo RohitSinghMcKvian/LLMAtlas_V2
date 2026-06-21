@@ -54,9 +54,11 @@ interface Props {
   modelName: string;
   providerName: string;
   onPrompt: (p: string) => void;
+  /** Hide the floating icon + welcome heading (when host page already shows them) */
+  compact?: boolean;
 }
 
-export function EnhancedEmptyState({ modelName, providerName, onPrompt }: Props) {
+export function EnhancedEmptyState({ modelName, providerName, onPrompt, compact = false }: Props) {
   const [activeCategory, setActiveCategory] = useState("all");
 
   const filtered  = activeCategory === "all" ? PROMPTS : PROMPTS.filter((p) => p.category === activeCategory);
@@ -67,50 +69,54 @@ export function EnhancedEmptyState({ modelName, providerName, onPrompt }: Props)
       variants={pageVariants}
       initial="hidden"
       animate="show"
-      className="flex flex-col items-center justify-center min-h-[70vh] px-4 py-12 select-none"
+      className={cn(
+        "flex flex-col items-center select-none",
+        compact ? "px-2 py-2" : "justify-center min-h-[70vh] px-4 py-12",
+      )}
     >
-      {/* Floating icon */}
-      <motion.div variants={fadeUp} className="relative mb-6">
-        <motion.div
-          className="h-20 w-20 rounded-2xl bg-gradient-to-br from-amber-500/20 via-primary/20 to-violet-500/20 flex items-center justify-center border border-primary/10 shadow-lg shadow-primary/5"
-          animate={{ y: [0, -8, 0] }}
-          transition={{ duration: 3.5, repeat: Infinity, ease: "easeInOut" }}
-        >
-          <motion.div
-            animate={{ rotate: [0, 12, -8, 0], scale: [1, 1.12, 1] }}
-            transition={{ duration: 5, repeat: Infinity, ease: "easeInOut", repeatDelay: 1 }}
-          >
-            <Sparkles className="h-10 w-10 text-amber-500" />
+      {!compact && (
+        <>
+          {/* Floating icon */}
+          <motion.div variants={fadeUp} className="relative mb-6">
+            <motion.div
+              className="h-20 w-20 rounded-2xl bg-gradient-to-br from-amber-500/20 via-primary/20 to-violet-500/20 flex items-center justify-center border border-primary/10 shadow-lg shadow-primary/5"
+              animate={{ y: [0, -8, 0] }}
+              transition={{ duration: 3.5, repeat: Infinity, ease: "easeInOut" }}
+            >
+              <motion.div
+                animate={{ rotate: [0, 12, -8, 0], scale: [1, 1.12, 1] }}
+                transition={{ duration: 5, repeat: Infinity, ease: "easeInOut", repeatDelay: 1 }}
+              >
+                <Sparkles className="h-10 w-10 text-amber-500" />
+              </motion.div>
+            </motion.div>
+            <motion.div
+              className="absolute -bottom-1 -right-1 h-6 w-6 rounded-full bg-gradient-to-br from-blue-500 to-violet-600 flex items-center justify-center shadow-sm border-2 border-background"
+              animate={{ scale: [1, 1.15, 1] }}
+              transition={{ duration: 2.5, repeat: Infinity, ease: "easeInOut", delay: 0.8 }}
+            >
+              <FlaskConical className="h-3 w-3 text-white" />
+            </motion.div>
           </motion.div>
-        </motion.div>
 
-        {/* Badge */}
-        <motion.div
-          className="absolute -bottom-1 -right-1 h-6 w-6 rounded-full bg-gradient-to-br from-blue-500 to-violet-600 flex items-center justify-center shadow-sm border-2 border-background"
-          animate={{ scale: [1, 1.15, 1] }}
-          transition={{ duration: 2.5, repeat: Infinity, ease: "easeInOut", delay: 0.8 }}
-        >
-          <FlaskConical className="h-3 w-3 text-white" />
-        </motion.div>
-      </motion.div>
-
-      {/* Heading */}
-      <motion.h2 variants={fadeUp} className="text-2xl font-bold mb-1 tracking-tight">
-        Start a conversation
-      </motion.h2>
-      <motion.p variants={fadeUp} className="text-muted-foreground text-sm mb-2 text-center max-w-sm leading-relaxed">
-        Chatting with{" "}
-        <span className="font-semibold text-foreground">{modelName || "the model"}</span>
-        {providerName && (
-          <> via <span className="font-medium text-foreground">{providerName}</span></>
-        )}
-      </motion.p>
-      <motion.p variants={fadeUp} className="text-xs text-muted-foreground/60 mb-8">
-        Free tier · No credit card required
-      </motion.p>
+          <motion.h2 variants={fadeUp} className="text-2xl font-bold mb-1 tracking-tight">
+            Start a conversation
+          </motion.h2>
+          <motion.p variants={fadeUp} className="text-muted-foreground text-sm mb-2 text-center max-w-sm leading-relaxed">
+            Chatting with{" "}
+            <span className="font-semibold text-foreground">{modelName || "the model"}</span>
+            {providerName && (
+              <> via <span className="font-medium text-foreground">{providerName}</span></>
+            )}
+          </motion.p>
+          <motion.p variants={fadeUp} className="text-xs text-muted-foreground/60 mb-8">
+            Free tier · No credit card required
+          </motion.p>
+        </>
+      )}
 
       {/* Category pills */}
-      <motion.div variants={fadeUp} className="flex items-center gap-1.5 mb-4 flex-wrap justify-center">
+      <motion.div variants={fadeUp} className={cn("flex items-center gap-1.5 flex-wrap justify-center", compact ? "mb-3" : "mb-4")}>
         {CATEGORIES.map((cat) => {
           const active = activeCategory === cat.id;
           return (
@@ -171,11 +177,13 @@ export function EnhancedEmptyState({ modelName, providerName, onPrompt }: Props)
         </AnimatePresence>
       </div>
 
-      <motion.p variants={fadeUp} className="mt-8 text-xs text-muted-foreground/40">
-        Press{" "}
-        <kbd className="px-1 py-0.5 rounded border border-border/60 bg-muted text-[10px] font-mono">?</kbd>{" "}
-        for keyboard shortcuts
-      </motion.p>
+      {!compact && (
+        <motion.p variants={fadeUp} className="mt-8 text-xs text-muted-foreground/40">
+          Press{" "}
+          <kbd className="px-1 py-0.5 rounded border border-border/60 bg-muted text-[10px] font-mono">?</kbd>{" "}
+          for keyboard shortcuts
+        </motion.p>
+      )}
     </motion.div>
   );
 }

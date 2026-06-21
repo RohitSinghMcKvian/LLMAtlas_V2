@@ -1,6 +1,13 @@
 import { NextRequest } from "next/server";
 import { streamChat, type ChatMessage, type ContentBlock, type ToolFunction } from "@/lib/providers";
 import { findModel } from "@/lib/models";
+import {
+  composeCapabilityPrimers,
+  modePrimer,
+  UCL_BASE_PRIMER,
+  type CapabilityId,
+  type UltraMode,
+} from "@/lib/ucl";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -11,6 +18,14 @@ interface AttachmentLike {
   mime: string;
   data: string;
   extractedText?: string;
+}
+
+/** Ultra-Capability flags applied server-side. Every surface can opt in. */
+interface UltraFlags {
+  mode?: UltraMode;
+  capabilities?: CapabilityId[];
+  /** Inject the base UCL persona (default true when any other ultra flag is set). */
+  base?: boolean;
 }
 
 interface Body {
@@ -28,6 +43,8 @@ interface Body {
   attachments?: AttachmentLike[];
   /** Native function-calling tools (OpenAI format). Passed through to supported providers. */
   tools?: ToolFunction[];
+  /** Opt-in Ultra-Capability flags. Server-side primer injection. */
+  ultra?: UltraFlags;
 }
 
 const ARTIFACT_PRIMER = `
@@ -58,15 +75,28 @@ export async function POST(req: NextRequest) {
     return new Response("modelId and messages are required", { status: 400 });
   }
 
-  // Inject artifact primer into the leading system message when requested.
+  // Inject artifact primer + Ultra-Capability primers into the leading system message.
   let messages = body.messages;
-  if (body.artifactMode) {
+  const ultraParts: string[] = [];
+  if (body.artifactMode) ultraParts.push(ARTIFACT_PRIMER);
+  if (body.ultra) {
+    const wantBase = body.ultra.base !== false;
+    if (wantBase) ultraParts.push(UCL_BASE_PRIMER);
+    const m = modePrimer(body.ultra.mode ?? "standard");
+    if (m) ultraParts.push(m);
+    if (body.ultra.capabilities?.length) {
+      const cap = composeCapabilityPrimers(body.ultra.capabilities);
+      if (cap) ultraParts.push(cap);
+    }
+  }
+  if (ultraParts.length) {
+    const injected = ultraParts.join("\n\n");
     const [first, ...rest] = messages;
     if (first && first.role === "system") {
       const firstText = typeof first.content === "string" ? first.content : "";
-      messages = [{ ...first, content: `${firstText}\n\n${ARTIFACT_PRIMER}` }, ...rest];
+      messages = [{ ...first, content: `${firstText}\n\n${injected}` }, ...rest];
     } else {
-      messages = [{ role: "system", content: ARTIFACT_PRIMER }, ...messages];
+      messages = [{ role: "system", content: injected }, ...messages];
     }
   }
 

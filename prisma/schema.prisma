@@ -33,6 +33,31 @@ model User {
   apiKeys             ApiKey[]
   verificationTokens  VerificationToken[]
   passwordResetTokens PasswordResetToken[]
+  subscriptions       Subscription[]
+}
+
+model Subscription {
+  id                 String    @id @default(cuid())
+  userId             String
+  provider           String    @default("razorpay")
+  plan               String // PRO | TEAMS
+  cycle              String // monthly | yearly
+  seats              Int       @default(1)
+  currency           String    @default("USD")
+  amount             Int // total charged, in the smallest currency unit (paise/cents)
+  status             String    @default("pending") // pending | active | canceled | expired | failed
+  razorpayOrderId    String?   @unique
+  razorpayPaymentId  String?   @unique
+  currentPeriodStart DateTime?
+  currentPeriodEnd   DateTime?
+  cancelAtPeriodEnd  Boolean   @default(false)
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([status])
 }
 
 model Account {

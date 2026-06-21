@@ -4,6 +4,7 @@ import { useState } from "react";
 import { DashboardSidebar } from "./sidebar";
 import { DashboardTopbar } from "./topbar";
 import { CommandPalette } from "@/components/shared/command-palette";
+import { AtlasAgentBar } from "@/components/agent/atlas-agent-bar";
 import { EmailVerificationBanner } from "@/components/auth/email-verification-banner";
 import { OnboardingModal } from "@/components/auth/onboarding-modal";
 import { cn } from "@/lib/utils";
@@ -42,6 +43,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
         <main className="flex-1 overflow-y-auto">{children}</main>
       </div>
       <CommandPalette />
+      <AtlasAgentBar />
       <OnboardingModal />
     </div>
   );

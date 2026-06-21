@@ -9,6 +9,8 @@ import { Button } from "@/components/ui/button"
 import {
   Dialog,
   DialogContent,
+  DialogTitle,
+  DialogDescription,
 } from "@/components/ui/dialog"
 
 const USE_CASES = [
@@ -69,6 +71,10 @@ export function OnboardingModal() {
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogContent className="max-w-md p-0 overflow-hidden border-white/10 bg-[hsl(222,47%,8%)]">
+        {/* Accessible title/description (visually hidden — design uses custom headings) */}
+        <DialogTitle className="sr-only">Personalize your LLMAtlas experience</DialogTitle>
+        <DialogDescription className="sr-only">A quick three-step setup to tailor LLMAtlas to how you work.</DialogDescription>
+
         {/* Progress dots */}
         <div className="flex items-center justify-center gap-2 pt-6 pb-2">
           {[0, 1, 2].map((i) => (

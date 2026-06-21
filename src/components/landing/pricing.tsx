@@ -5,6 +5,12 @@ import Link from "next/link";
 import { Check, Sparkles, Zap, Building2, ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { planDisplay } from "@/lib/billing/plans";
+
+/* Prices come from the billing single-source-of-truth so the page can never
+   drift from what the checkout actually charges. */
+const pro = planDisplay("pro");
+const teams = planDisplay("teams");
 
 interface Tier {
   name: string;
@@ -43,9 +49,9 @@ const TIERS: Tier[] = [
   },
   {
     name: "Pro",
-    price: "$12",
-    cadence: " / month",
-    annualNote: "$9 / mo billed yearly  (−25%)",
+    price: pro.price,
+    cadence: pro.cadence,
+    annualNote: pro.annualNote,
     description: "For developers shipping real AI features — full model access, eval tooling, and priority support.",
     icon: Sparkles,
     accentClass: "text-violet-500 bg-violet-500/10",
@@ -61,14 +67,14 @@ const TIERS: Tier[] = [
       "CSV / JSON export of eval results",
       "Priority support — 48 h SLA",
     ],
-    cta: "Start 7-day trial",
-    href: "/auth/register",
+    cta: "Get Pro",
+    href: "/upgrade?plan=pro",
   },
   {
     name: "Teams",
-    price: "$29",
-    cadence: " / seat / mo",
-    annualNote: "$22 / seat / mo billed yearly  (−24%)",
+    price: teams.price,
+    cadence: teams.cadence,
+    annualNote: teams.annualNote,
     description: "Shared workspaces, RBAC, and team budgets — built for AI-native engineering teams.",
     icon: Building2,
     accentClass: "text-amber-500 bg-amber-500/10",
@@ -82,8 +88,8 @@ const TIERS: Tier[] = [
       "SSO (Google + GitHub)",
       "Priority support — 24 h SLA",
     ],
-    cta: "Talk to sales",
-    href: "/contact",
+    cta: "Get Teams",
+    href: "/upgrade?plan=teams",
   },
 ];
 

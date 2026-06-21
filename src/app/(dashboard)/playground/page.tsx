@@ -1,20 +1,23 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState } from "react";
 import { nanoid } from "nanoid";
 import {
   Send, Square, Trash2, Settings, Sparkles, Zap, Clock,
-  Copy, RefreshCw, Download, ChevronDown, Check, BookmarkPlus, Info,
-  Pencil, Boxes, FileCode2, X, Share2, Play, ChevronUp, ArrowDown,
-  History, Plus,
+  Copy, RefreshCw, ChevronDown, Check, BookmarkPlus, Info,
+  Pencil, Boxes, FileCode2, Share2, Play, ArrowDown,
+  Plus, Menu, MoreHorizontal, Keyboard, BarChart2,
 } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/input";
-import { Card } from "@/components/ui/card";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { Badge } from "@/components/ui/badge";
+import {
+  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent,
+  DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator,
+} from "@/components/ui/dropdown-menu";
 import { ModelPicker } from "@/components/playground/model-picker";
 import { ChatMessage } from "@/components/playground/message";
 import { PlaygroundSettings } from "@/components/playground/settings-panel";
@@ -24,13 +27,14 @@ import { HistoryRail } from "@/components/playground/history-rail";
 import { StreamError, FallbackBanner } from "@/components/shared/stream-error";
 import { VoiceInputButton } from "@/components/playground/voice-input";
 import { FollowUpSuggestions } from "@/components/playground/follow-up-suggestions";
-import { KeyboardShortcutsPanel, KeyboardShortcutsButton } from "@/components/playground/keyboard-shortcuts";
-import { ConversationStats } from "@/components/playground/conversation-stats";
+import { KeyboardShortcutsPanel } from "@/components/playground/keyboard-shortcuts";
 import { ExportMenu } from "@/components/playground/export-menu";
 import { EnhancedEmptyState } from "@/components/playground/empty-state";
 import { FormatToggle, formatSystemPromptSuffix, type ResponseFormat } from "@/components/playground/format-toggle";
 import { TokenBudgetBar } from "@/components/playground/token-budget";
-import { findModel, PROVIDERS, supportsVision } from "@/lib/models";
+import { UltraModeToggle } from "@/components/shared/ultra-mode-toggle";
+import { autoPickCapability, runUltraThink, type CapabilityId, type UltraMode } from "@/lib/ucl";
+import { findModel, PROVIDERS } from "@/lib/models";
 import {
   useSettingsStore, usePromptStore, useArtifactStore, useConversationStore, useProjectStore,
   useUsageStore,
@@ -85,6 +89,7 @@ export default function PlaygroundPage() {
   const [showSettings, setShowSettings] = useState(false);
   const [showPresets, setShowPresets] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
+  const [showMobileHistory, setShowMobileHistory] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
 
@@ -96,11 +101,15 @@ export default function PlaygroundPage() {
   const [presencePenalty, setPresencePenalty] = useState(0);
   const [artifactMode, setArtifactMode] = useState(true);
   const [responseFormat, setResponseFormat] = useState<ResponseFormat>("markdown");
+  const [ultraMode, setUltraMode] = useState<UltraMode>("plus");
+  const [capabilities, setCapabilities] = useState<CapabilityId[]>([]);
+  const [ultraPhase, setUltraPhase] = useState<"plan" | "build" | "critique" | "polish" | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editBuffer, setEditBuffer] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [historyCollapsed, setHistoryCollapsed] = useState(false);
   const [currentConvId, setCurrentConvId] = useState<string | null>(null);
+  const [autoSend, setAutoSend] = useState<string | null>(null);
 
   const beginStream = useArtifactStore((s) => s.beginStream);
   const streamPush = useArtifactStore((s) => s.streamPush);
@@ -141,15 +150,37 @@ export default function PlaygroundPage() {
 
   useEffect(() => { setDefaultModel(modelId); }, [modelId, setDefaultModel]);
 
-  // URL param handling
+  // URL param handling — supports ?model= , ?conv= , and Atlas's ?q=/?send=
   useEffect(() => {
     const url = new URL(window.location.href);
     const queryModel = url.searchParams.get("model");
     if (queryModel && findModel(queryModel)) setModelId(queryModel);
     const queryConv = url.searchParams.get("conv");
     if (queryConv) loadConversation(queryConv);
+    const queued = url.searchParams.get("q");
+    if (queued) {
+      const autoSendFlag = url.searchParams.get("send") === "1";
+      if (autoSendFlag) setAutoSend(queued);
+      else { setInput(queued); setTimeout(() => textareaRef.current?.focus(), 60); }
+    }
+    // Strip the transient prompt params so a reload doesn't re-fire them.
+    if (queued || url.searchParams.has("send")) {
+      url.searchParams.delete("q");
+      url.searchParams.delete("send");
+      window.history.replaceState({}, "", url.toString());
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Auto-send a prompt queued by Atlas (open_playground with send=true).
+  useEffect(() => {
+    if (autoSend && model && !busy) {
+      const text = autoSend;
+      setAutoSend(null);
+      send(text);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoSend, model, busy]);
 
   // Auto-scroll to bottom
   useEffect(() => {
@@ -171,6 +202,14 @@ export default function PlaygroundPage() {
     return () => el.removeEventListener("scroll", onScroll);
   }, []);
 
+  // Auto-grow textarea
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = Math.min(el.scrollHeight, 240) + "px";
+  }, [input]);
+
   // Global keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -180,17 +219,11 @@ export default function PlaygroundPage() {
         setShowShortcuts(true);
         return;
       }
-      // Alt+N = new conversation
       if (e.altKey && e.key === "n") { e.preventDefault(); startNewConversation(); return; }
-      // Alt+H = toggle history
       if (e.altKey && e.key === "h") { e.preventDefault(); setHistoryCollapsed((v) => !v); return; }
-      // Alt+A = toggle artifacts
       if (e.altKey && e.key === "a") { e.preventDefault(); setArtifactMode((v) => !v); return; }
-      // Alt+E = export
       if (e.altKey && e.key === "e") { e.preventDefault(); exportConversation(); return; }
-      // Alt+S = share
       if (e.altKey && e.key === "s") { e.preventDefault(); shareConversation(); return; }
-      // Ctrl/Cmd+R = regenerate
       if ((e.ctrlKey || e.metaKey) && e.key === "r" && !busy) { e.preventDefault(); regenerateLast(); return; }
     };
     window.addEventListener("keydown", handler);
@@ -307,15 +340,116 @@ export default function PlaygroundPage() {
     const abort = new AbortController();
     abortRef.current = abort;
 
-    // Build effective system prompt with format suffix
     const effectiveSystemPrompt = systemPrompt + formatSystemPromptSuffix(responseFormat);
-
-    // Artifacts only stream when artifact-mode is on and we're emitting markdown.
     const wantArtifacts = artifactMode && responseFormat === "markdown";
     if (wantArtifacts) beginStream();
     let liveFirstId: string | undefined;
 
+    // Capability auto-pick if user didn't choose any.
+    const effectiveCapabilities = (() => {
+      if (capabilities.length) return capabilities;
+      const auto = autoPickCapability(text);
+      return auto ? [auto.id] : [];
+    })();
+
     try {
+      // ── Ultra-think branch: orchestrate multi-phase plan→build (→critique→polish).
+      if (ultraMode === "ultra" || ultraMode === "hermes") {
+        let cleanText = "";
+        let errorEv: StreamEvent | undefined;
+        let fallbackEv: StreamEvent | undefined;
+        let frame = 0;
+        const flush = () => {
+          frame = 0;
+          setMessages((prev) => {
+            const copy = [...prev];
+            const last = copy[copy.length - 1];
+            if (last?.streaming) copy[copy.length - 1] = { ...last, content: cleanText, error: errorEv, fallback: fallbackEv };
+            return copy;
+          });
+          if (wantArtifacts) {
+            for (const d of detectArtifactsStreaming(cleanText)) {
+              const a = streamPush({
+                externalId: d.externalId,
+                title: d.title,
+                kind: d.kind,
+                language: d.language,
+                content: d.content,
+                messageId: placeholder.id,
+                conversationId: convId,
+              });
+              if (!liveFirstId) {
+                liveFirstId = a.id;
+                if (!useArtifactStore.getState().openId) openArtifact(a.id);
+              }
+            }
+          }
+        };
+
+        const result = await runUltraThink({
+          modelId,
+          apiKey: byok[model.provider],
+          systemPrompt: effectiveSystemPrompt,
+          messages: buildApiMessages(history, "", undefined, projectFor).slice(1), // drop the empty system we just built
+          mode: ultraMode,
+          onPhase: (phase, _t, status) => { if (status === "running") setUltraPhase(phase); },
+          onDelta: (t) => {
+            cleanText = t;
+            if (!frame) frame = requestAnimationFrame(flush);
+          },
+          onUsage: (ev) => {
+            useUsageStore.getState().record({
+              modelId: ev.modelId ?? model.id,
+              promptTokens: ev.promptTokens,
+              completionTokens: ev.completionTokens,
+              costUSD: ev.costUSD,
+            });
+          },
+          signal: abort.signal,
+        });
+
+        if (frame) cancelAnimationFrame(frame);
+        cleanText = result.text;
+        errorEv = result.errorEvent;
+        fallbackEv = result.fallbackEvent;
+        flush();
+
+        const elapsed = Date.now() - startTime;
+        if (wantArtifacts) {
+          let firstArtifactId = liveFirstId;
+          for (const d of detectArtifacts(cleanText)) {
+            const a = streamPush({
+              externalId: d.externalId,
+              title: d.title,
+              kind: d.kind,
+              language: d.language,
+              content: d.content,
+              messageId: placeholder.id,
+              conversationId: convId,
+            });
+            if (!firstArtifactId) firstArtifactId = a.id;
+          }
+          if (firstArtifactId && !useArtifactStore.getState().openId) openArtifact(firstArtifactId);
+        }
+
+        updateConvMessage(placeholderConvMsg.id, {
+          content: cleanText,
+          streaming: false,
+          latencyMs: elapsed,
+          tokens: estimateTokens(cleanText),
+          errorMessage: errorEv?.message,
+        });
+
+        setMessages((prev) => {
+          const copy = [...prev];
+          const last = copy[copy.length - 1];
+          if (last) copy[copy.length - 1] = { ...last, streaming: false, latencyMs: elapsed, tokens: estimateTokens(cleanText), error: errorEv, fallback: fallbackEv, timestamp: Date.now() };
+          return copy;
+        });
+        setUltraPhase(null);
+        return;
+      }
+
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -331,6 +465,7 @@ export default function PlaygroundPage() {
           apiKey: byok[model.provider],
           artifactMode: artifactMode && responseFormat === "markdown",
           attachments: sentAttachments,
+          ultra: { mode: ultraMode, capabilities: effectiveCapabilities },
         }),
       });
 
@@ -351,7 +486,6 @@ export default function PlaygroundPage() {
           if (last?.streaming) copy[copy.length - 1] = { ...last, content: cleanText, error: errorEv, fallback: fallbackEv };
           return copy;
         });
-        // Build artifacts live in the panel as the model writes them.
         if (wantArtifacts) {
           for (const d of detectArtifactsStreaming(cleanText)) {
             const a = streamPush({
@@ -394,7 +528,6 @@ export default function PlaygroundPage() {
       flush();
 
       const elapsed = Date.now() - startTime;
-      // Finalize artifacts from the fully-closed content (in-place for ones streamed this turn).
       if (wantArtifacts) {
         let firstArtifactId = liveFirstId;
         for (const d of detectArtifacts(cleanText)) {
@@ -434,7 +567,19 @@ export default function PlaygroundPage() {
         return copy;
       });
     } catch (err) {
-      if ((err as Error).name === "AbortError") return;
+      // Swallow benign stream aborts from navigation / new-chat / stop. Different
+      // runtimes use different names: "AbortError" (standard), "Canceled" (Chrome),
+      // or surface only as { code: "ERR_CANCELED" } / DOMException w/ ABORT_ERR=20.
+      const e = err as Error & { code?: string };
+      const isAbort =
+        e.name === "AbortError" ||
+        e.name === "Canceled" ||
+        e.name === "CanceledError" ||
+        e.code === "ERR_CANCELED" ||
+        e.code === "ABORT_ERR" ||
+        (typeof DOMException !== "undefined" && err instanceof DOMException && err.name === "AbortError") ||
+        /aborted|cancel/i.test(e.message ?? "");
+      if (isAbort) return;
       const msg = err instanceof Error ? err.message : "Unknown error";
       const fallbackEvent: StreamEvent = { kind: "error", code: "stream_aborted", message: msg };
       setMessages((prev) => {
@@ -445,11 +590,12 @@ export default function PlaygroundPage() {
       });
     } finally {
       setBusy(false);
+      setUltraPhase(null);
       abortRef.current = null;
     }
   }
 
-  function stop() { abortRef.current?.abort(); setBusy(false); setMessages((prev) => prev.map((m) => m.streaming ? { ...m, streaming: false } : m)); }
+  function stop() { abortRef.current?.abort(); setBusy(false); setUltraPhase(null); setMessages((prev) => prev.map((m) => m.streaming ? { ...m, streaming: false } : m)); }
   function clearAll() { setMessages([]); }
 
   function continueLast() {
@@ -556,202 +702,450 @@ export default function PlaygroundPage() {
 
   const activePreset = PRESETS.find(p => p.prompt === systemPrompt);
   const showArtifactPane = !!activeArtifact;
-  const chatMaxWidth = showArtifactPane ? "max-w-3xl" : "max-w-4xl";
-
-  // Conversation title for export
+  const isEmpty = messages.length === 0;
   const convTitle = conversation?.title ?? (messages[0]?.content?.slice(0, 40));
 
-  return (
-    <div className="flex flex-col h-full">
-      {/* ─── Header ─── */}
-      <div className="border-b bg-background/95 backdrop-blur-sm sticky top-0 z-10">
-        <div className={cn("py-2.5 flex flex-wrap items-center gap-2 px-4", showArtifactPane ? "" : "container max-w-6xl")}>
-          {/* Left group */}
-          <div className="flex items-center gap-2 mr-auto min-w-0">
-            <Sparkles className="h-4 w-4 text-amber-500 flex-shrink-0" />
-            <h1 className="font-semibold text-sm hidden sm:block text-foreground/90">Playground</h1>
+  // Conversation stats (for popover)
+  const stats = (() => {
+    const userMsgs = messages.filter((m) => m.role === "user").length;
+    const asstMsgs = messages.filter((m) => m.role === "assistant").length;
+    const totalTokens = messages.reduce((sum, m) => sum + (m.tokens ?? 0), 0);
+    const latencies = messages.filter((m) => m.role === "assistant").map((m) => m.latencyMs ?? 0).filter(Boolean);
+    const avgLatency = latencies.length ? latencies.reduce((a, b) => a + b, 0) / latencies.length : 0;
+    const totalWords = messages.filter((m) => m.role !== "system").reduce((sum, m) => sum + m.content.split(/\s+/).filter(Boolean).length, 0);
+    return { userMsgs, asstMsgs, totalTokens, avgLatency, totalWords };
+  })();
 
-            {/* Persona preset selector */}
-            <div className="relative">
-              <button
-                onClick={() => setShowPresets(p => !p)}
-                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border bg-muted/50 hover:bg-accent text-xs font-medium transition-colors"
-              >
-                <span>{activePreset?.icon ?? "🤖"}</span>
-                <span className="hidden sm:inline max-w-[80px] truncate">{activePreset?.label ?? "Custom"}</span>
-                <ChevronDown className="h-3 w-3 opacity-50 flex-shrink-0" />
-              </button>
-              {showPresets && (
-                <>
-                  <div className="fixed inset-0 z-30" onClick={() => setShowPresets(false)} />
-                  <div className="absolute top-full left-0 mt-1 z-40 bg-card border rounded-xl shadow-xl p-1 min-w-[220px] animate-in fade-in slide-in-from-top-1 duration-100">
-                    <p className="px-3 py-1.5 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Personas</p>
-                    {PRESETS.map(p => (
-                      <button
-                        key={p.label}
-                        onClick={() => { setSystemPrompt(p.prompt); setShowPresets(false); }}
-                        className={cn(
-                          "w-full text-left flex items-center gap-2 px-3 py-2 rounded-lg text-sm hover:bg-accent transition-colors",
-                          p.prompt === systemPrompt && "bg-accent"
-                        )}
-                      >
-                        <span className="text-base">{p.icon}</span>
-                        <div className="flex-1 min-w-0">
-                          <div className="font-medium truncate">{p.label}</div>
-                        </div>
-                        {p.prompt === systemPrompt && <Check className="h-3.5 w-3.5 text-primary flex-shrink-0" />}
-                      </button>
-                    ))}
-                  </div>
-                </>
-              )}
-            </div>
+  /* ─── Composer (the hero) ─────────────────────────────────────────────── */
+  const Composer = (
+    <div className={cn("w-full", isEmpty ? "max-w-2xl" : "max-w-3xl", "mx-auto")}>
+      <div className={cn(
+        "relative rounded-2xl border bg-card",
+        "shadow-[0_8px_30px_-12px_rgba(0,0,0,0.18)]",
+        "ring-1 ring-black/5 dark:ring-white/5",
+        "transition-shadow focus-within:shadow-[0_12px_36px_-12px_rgba(0,0,0,0.25)]",
+        "focus-within:ring-primary/30",
+      )}>
+        <AttachmentTray
+          attachments={attachments}
+          onAdd={(a) => setAttachments((prev) => [...prev, a])}
+          onRemove={(id) => setAttachments((prev) => prev.filter((x) => x.id !== id))}
+          disabled={busy}
+        />
+        <Textarea
+          ref={textareaRef}
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onPaste={(e) => {
+            const items = e.clipboardData?.items;
+            if (!items) return;
+            for (let i = 0; i < items.length; i++) {
+              const it = items[i];
+              if (it.kind === "file" && it.type.startsWith("image/")) {
+                const f = it.getAsFile();
+                if (f) {
+                  import("@/lib/attachments").then(({ fileToAttachment }) =>
+                    fileToAttachment(f).then((a) => setAttachments((p) => [...p, a])).catch(() => {})
+                  );
+                }
+              }
+            }
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+          }}
+          placeholder={isEmpty
+            ? `Message ${model?.name ?? "the model"}…`
+            : `Reply to ${model?.name ?? "the model"}…`}
+          rows={1}
+          className={cn(
+            "border-0 resize-none focus-visible:ring-0 rounded-none bg-transparent",
+            "px-4 sm:px-5 pt-4 pb-2 text-[15px] leading-relaxed",
+            "min-h-[56px] max-h-[240px] placeholder:text-muted-foreground/60",
+          )}
+        />
+
+        {/* Action row */}
+        <div className="flex items-end justify-between gap-2 px-2 sm:px-3 pb-2 pt-1">
+          <div className="flex items-center gap-1 min-w-0">
+            <VoiceInputButton
+              onTranscript={(t) => setInput((prev) => prev ? prev + " " + t : t)}
+              disabled={busy}
+            />
+            {/* Inline budget meter — only on wider screens, condensed */}
+            {model && !isEmpty && (
+              <div className="hidden md:flex items-center gap-2 ml-1 text-[10px] text-muted-foreground/70 min-w-0">
+                <Clock className="h-3 w-3 flex-shrink-0" />
+                <span className="tabular-nums whitespace-nowrap">{tokenEstimate.toLocaleString()}</span>
+                <span className="opacity-50 hidden lg:inline">/ {model.context >= 1_000_000 ? `${(model.context/1_000_000).toFixed(1)}M` : `${Math.round(model.context/1000)}K`}</span>
+                <div className="hidden xl:block w-24"><TokenBudgetBar used={tokenEstimate} total={model.context} /></div>
+              </div>
+            )}
           </div>
 
-          {/* Center: model picker */}
-          <ModelPicker value={modelId} onChange={setModelId} />
-
-          {/* Model info badge */}
-          {model && (
-            <div className="hidden xl:flex items-center gap-1.5 text-xs text-muted-foreground border rounded-lg px-2.5 py-1.5 bg-card/50">
-              <Info className="h-3 w-3" />
-              <span>{model.context >= 1_000_000 ? `${(model.context/1_000_000).toFixed(1)}M` : `${Math.round(model.context/1000)}K`} ctx</span>
-              <span className="opacity-40">·</span>
-              <Zap className="h-3 w-3 text-amber-500" />
-              <span>{model.speedScore}</span>
-              <span className="opacity-40">·</span>
-              <span className="text-amber-500">★</span>
-              <span>{model.benchmark}</span>
-            </div>
-          )}
-
-          {/* Format toggle */}
-          <FormatToggle value={responseFormat} onChange={setResponseFormat} />
-
-          {/* Artifact mode toggle */}
-          <button
-            onClick={() => setArtifactMode((v) => !v)}
-            title={artifactMode ? "Artifact mode on — model emits previewable blocks" : "Artifact mode off"}
-            className={cn(
-              "inline-flex items-center gap-1.5 h-9 px-2.5 rounded-md border text-xs font-medium transition-colors",
-              artifactMode ? "bg-primary/10 border-primary/30 text-primary" : "bg-muted/30 text-muted-foreground hover:bg-accent",
+          <div className="flex items-center gap-1.5">
+            {responseFormat !== "markdown" && (
+              <Badge variant="outline" className="text-[10px] h-5 hidden sm:flex">
+                {responseFormat === "plain" ? "Plain" : "JSON"}
+              </Badge>
             )}
-          >
-            <Boxes className="h-3.5 w-3.5" />
-            <span className="hidden md:inline">Artifacts</span>
-          </button>
-
-          {/* Open most-recent artifact */}
-          {artifacts.length > 0 && !showArtifactPane && (
-            <button
-              onClick={() => openArtifact(artifacts[0].id)}
-              title="Reopen latest artifact"
-              className="inline-flex items-center gap-1.5 h-9 px-2.5 rounded-md border text-xs font-medium bg-muted/30 hover:bg-accent text-muted-foreground transition-colors"
-            >
-              <FileCode2 className="h-3.5 w-3.5" />
-              <span className="hidden lg:inline truncate max-w-[120px]">{artifacts[0].title}</span>
-            </button>
-          )}
-
-          {/* Settings */}
-          <Sheet open={showSettings} onOpenChange={setShowSettings}>
-            <SheetTrigger asChild>
-              <Button variant="outline" size="icon" aria-label="Settings" className="h-9 w-9" title="Generation settings">
-                <Settings className="h-4 w-4" />
+            {!busy && !isEmpty && messages[messages.length - 1]?.role === "assistant" && messages[messages.length - 1]?.content && !input.trim() && (
+              <Button size="sm" variant="ghost" onClick={continueLast} className="gap-1 h-9 px-2.5 text-xs">
+                <Play className="h-3.5 w-3.5" /> <span className="hidden sm:inline">Continue</span>
               </Button>
+            )}
+            {busy ? (
+              <Button size="sm" variant="destructive" onClick={stop} className="gap-1.5 h-9 px-3 rounded-xl">
+                <Square className="h-3.5 w-3.5" /> <span className="hidden sm:inline">Stop</span>
+              </Button>
+            ) : (
+              <Button
+                size="sm"
+                onClick={() => send()}
+                disabled={!input.trim() || !model}
+                className={cn(
+                  "h-9 w-9 sm:w-auto sm:px-3.5 rounded-xl gap-1.5 transition-all",
+                  "shadow-sm hover:shadow-md",
+                  input.trim() && "shadow-primary/20",
+                )}
+                aria-label="Send"
+              >
+                <Send className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline text-xs font-medium">Send</span>
+              </Button>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Tiny helper line */}
+      <p className="text-[10px] text-muted-foreground/50 text-center mt-2 px-1">
+        Enter to send · Shift+Enter for newline · <kbd className="px-1 py-0 rounded border border-border/60 bg-muted text-[10px]">?</kbd> for shortcuts
+      </p>
+    </div>
+  );
+
+  /* ─── Persona pill (reusable) ─────────────────────────────────────────── */
+  const PersonaPill = (
+    <div className="relative">
+      <button
+        onClick={() => setShowPresets(p => !p)}
+        className="inline-flex items-center gap-1.5 h-9 px-2.5 rounded-lg border bg-muted/40 hover:bg-accent text-xs font-medium transition-colors"
+        title="Persona / system prompt"
+      >
+        <span className="text-base leading-none">{activePreset?.icon ?? "🤖"}</span>
+        <span className="hidden md:inline max-w-[80px] truncate">{activePreset?.label ?? "Custom"}</span>
+        <ChevronDown className="h-3 w-3 opacity-50 flex-shrink-0" />
+      </button>
+      {showPresets && (
+        <>
+          <div className="fixed inset-0 z-30" onClick={() => setShowPresets(false)} />
+          <div className="absolute top-full left-0 mt-1.5 z-40 bg-popover border rounded-xl shadow-xl p-1 min-w-[220px] animate-in fade-in slide-in-from-top-1 duration-150">
+            <p className="px-3 py-1.5 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Personas</p>
+            {PRESETS.map(p => (
+              <button
+                key={p.label}
+                onClick={() => { setSystemPrompt(p.prompt); setShowPresets(false); }}
+                className={cn(
+                  "w-full text-left flex items-center gap-2 px-3 py-2 rounded-lg text-sm hover:bg-accent transition-colors",
+                  p.prompt === systemPrompt && "bg-accent",
+                )}
+              >
+                <span className="text-base">{p.icon}</span>
+                <div className="flex-1 min-w-0 font-medium truncate">{p.label}</div>
+                {p.prompt === systemPrompt && <Check className="h-3.5 w-3.5 text-primary flex-shrink-0" />}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+
+  return (
+    <div className="flex flex-col h-full bg-background">
+      {/* ─── Header: slim, single row, mobile-first ─── */}
+      <header className="border-b bg-background/85 backdrop-blur-md sticky top-0 z-20">
+        <div className="flex items-center gap-2 px-3 sm:px-4 h-14">
+          {/* Mobile + tablet: history drawer trigger */}
+          <Sheet open={showMobileHistory} onOpenChange={setShowMobileHistory}>
+            <SheetTrigger asChild>
+              <button
+                className="lg:hidden inline-flex items-center justify-center h-9 w-9 rounded-lg hover:bg-accent transition-colors"
+                aria-label="Open history"
+              >
+                <Menu className="h-4 w-4" />
+              </button>
             </SheetTrigger>
-            <SheetContent className="overflow-y-auto">
-              <SheetHeader><SheetTitle>Generation Settings</SheetTitle></SheetHeader>
-              <div className="mt-6">
-                <PlaygroundSettings
-                  systemPrompt={systemPrompt}
-                  temperature={temperature}
-                  maxTokens={maxTokens}
-                  topP={topP}
-                  frequencyPenalty={frequencyPenalty}
-                  presencePenalty={presencePenalty}
-                  onChange={(next) => {
-                    if (next.systemPrompt !== undefined) setSystemPrompt(next.systemPrompt);
-                    if (next.temperature !== undefined) setTemperature(next.temperature);
-                    if (next.maxTokens !== undefined) setMaxTokens(next.maxTokens);
-                    if (next.topP !== undefined) setTopP(next.topP);
-                    if (next.frequencyPenalty !== undefined) setFrequencyPenalty(next.frequencyPenalty);
-                    if (next.presencePenalty !== undefined) setPresencePenalty(next.presencePenalty);
+            <SheetContent side="left" className="p-0 w-[300px]">
+              <SheetHeader className="sr-only"><SheetTitle>Conversations</SheetTitle></SheetHeader>
+              <div className="h-full">
+                <HistoryRail
+                  collapsed={false}
+                  onToggleCollapsed={() => {}}
+                  currentId={currentConvId}
+                  onSelect={(id) => {
+                    loadConversation(id);
+                    setShowMobileHistory(false);
+                    const url = new URL(window.location.href);
+                    url.searchParams.set("conv", id);
+                    window.history.replaceState({}, "", url.toString());
                   }}
+                  onNew={() => { startNewConversation(); setShowMobileHistory(false); }}
                 />
               </div>
             </SheetContent>
           </Sheet>
 
-          {/* Share */}
-          {messages.length > 0 && (
-            <Button
-              variant="ghost" size="icon"
-              onClick={shareConversation}
-              className="h-9 w-9"
-              title="Copy share link (Alt+S)"
-            >
-              <Share2 className="h-4 w-4" />
-            </Button>
-          )}
+          {/* Brand — only on large screens (dashboard already brands) */}
+          <div className="hidden lg:flex items-center gap-2 mr-1">
+            <Sparkles className="h-4 w-4 text-amber-500 flex-shrink-0" />
+            <span className="font-semibold text-sm text-foreground/90 hidden xl:inline">Playground</span>
+          </div>
 
-          {/* Export menu */}
-          <ExportMenu
-            messages={messages}
-            modelName={model?.name}
-            systemPrompt={systemPrompt}
-            conversationTitle={convTitle}
-            disabled={messages.length === 0}
+          {/* Persona */}
+          {PersonaPill}
+
+          {/* Model picker — flex-1 so it gets the breathing room */}
+          <div className="flex-1 min-w-0 flex justify-start">
+            <ModelPicker value={modelId} onChange={setModelId} />
+          </div>
+
+          {/* UltraModeToggle — surfaced at ALL sizes (icon-only on mobile via its
+              internal `hidden md:inline` labels). Lifted out of the More overflow menu
+              because nesting its popovers caused clipping on phones. */}
+          <UltraModeToggle
+            mode={ultraMode}
+            capabilities={capabilities}
+            onModeChange={setUltraMode}
+            onCapabilitiesChange={setCapabilities}
           />
+          {/* Format + Artifacts — desktop-only inline pills (mobile reaches them via the More menu) */}
+          <div className="hidden lg:flex items-center gap-1.5">
+            <FormatToggle value={responseFormat} onChange={setResponseFormat} />
+            <button
+              onClick={() => setArtifactMode((v) => !v)}
+              title={artifactMode ? "Artifact mode on" : "Artifact mode off"}
+              className={cn(
+                "inline-flex items-center gap-1.5 h-9 px-2.5 rounded-lg border text-xs font-medium transition-colors",
+                artifactMode ? "bg-primary/10 border-primary/30 text-primary" : "bg-muted/30 text-muted-foreground hover:bg-accent",
+              )}
+            >
+              <Boxes className="h-3.5 w-3.5" />
+              <span className="hidden xl:inline">Artifacts</span>
+            </button>
+            {artifacts.length > 0 && !showArtifactPane && (
+              <button
+                onClick={() => openArtifact(artifacts[0].id)}
+                title="Reopen latest artifact"
+                className="inline-flex items-center gap-1.5 h-9 px-2.5 rounded-lg border bg-muted/30 hover:bg-accent text-muted-foreground text-xs font-medium transition-colors"
+              >
+                <FileCode2 className="h-3.5 w-3.5" />
+                <span className="hidden xl:inline truncate max-w-[120px]">{artifacts[0].title}</span>
+              </button>
+            )}
+          </div>
 
-          {/* New conversation */}
+          {/* New chat — always visible */}
           <Button
-            variant="ghost" size="icon"
+            variant="outline" size="sm"
             onClick={startNewConversation}
-            className="h-9 w-9"
+            className="h-9 gap-1.5 px-2 sm:px-3"
             title="New conversation (Alt+N)"
           >
-            <Plus className="h-4 w-4" />
+            <Plus className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline text-xs">New</span>
           </Button>
 
-          {/* Clear */}
-          <Button variant="ghost" size="icon" onClick={clearAll} className="h-9 w-9" title="Clear view">
-            <Trash2 className="h-4 w-4" />
-          </Button>
+          {/* Overflow menu — everything else */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                className="inline-flex items-center justify-center h-9 w-9 rounded-lg border bg-muted/30 hover:bg-accent transition-colors"
+                aria-label="More actions"
+                title="More actions"
+              >
+                <MoreHorizontal className="h-4 w-4" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-56">
+              {/* Mobile/tablet-only quick toggles (UltraModeToggle is in the toolbar at all sizes — its
+                  nested popovers cannot live inside another dropdown). FormatToggle stays here because
+                  it's a simple inline control with no popover. */}
+              <div className="lg:hidden p-1">
+                <DropdownMenuLabel className="text-[10px] uppercase tracking-wider opacity-70">Format</DropdownMenuLabel>
+                <div className="px-2 py-1.5">
+                  <FormatToggle value={responseFormat} onChange={setResponseFormat} />
+                </div>
+                <DropdownMenuItem
+                  onClick={() => setArtifactMode((v) => !v)}
+                  className="justify-between"
+                >
+                  <span className="flex items-center gap-2"><Boxes className="h-3.5 w-3.5" /> Artifact mode</span>
+                  {artifactMode ? <Check className="h-3.5 w-3.5 text-primary" /> : <span className="text-[10px] opacity-50">off</span>}
+                </DropdownMenuItem>
+                {artifacts.length > 0 && !showArtifactPane && (
+                  <DropdownMenuItem onClick={() => openArtifact(artifacts[0].id)}>
+                    <FileCode2 className="h-3.5 w-3.5" />
+                    <span className="truncate">{artifacts[0].title}</span>
+                  </DropdownMenuItem>
+                )}
+                <DropdownMenuSeparator />
+              </div>
 
-          {/* Keyboard shortcuts */}
-          <KeyboardShortcutsButton onClick={() => setShowShortcuts(true)} />
+              <DropdownMenuItem onClick={() => setShowSettings(true)}>
+                <Settings className="h-3.5 w-3.5" /> Generation settings
+              </DropdownMenuItem>
+
+              {messages.length > 0 && (
+                <>
+                  <DropdownMenuItem onClick={shareConversation}>
+                    <Share2 className="h-3.5 w-3.5" /> Share link
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={exportConversation}>
+                    <FileCode2 className="h-3.5 w-3.5" /> Quick export (.md)
+                  </DropdownMenuItem>
+                </>
+              )}
+
+              {messages.length > 0 && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuLabel className="text-[10px] uppercase tracking-wider opacity-70 flex items-center gap-1.5">
+                    <BarChart2 className="h-3 w-3" /> Conversation
+                  </DropdownMenuLabel>
+                  <div className="px-2 pb-2 text-[11px] text-muted-foreground space-y-0.5">
+                    <div className="flex justify-between"><span>Turns</span><span className="tabular-nums font-medium text-foreground">{stats.userMsgs}</span></div>
+                    <div className="flex justify-between"><span>Tokens</span><span className="tabular-nums font-medium text-foreground">{stats.totalTokens > 1000 ? `${(stats.totalTokens/1000).toFixed(1)}K` : stats.totalTokens}</span></div>
+                    <div className="flex justify-between"><span>Words</span><span className="tabular-nums font-medium text-foreground">{stats.totalWords > 1000 ? `${(stats.totalWords/1000).toFixed(1)}K` : stats.totalWords}</span></div>
+                    {stats.avgLatency > 0 && <div className="flex justify-between"><span>Avg latency</span><span className="tabular-nums font-medium text-foreground">{(stats.avgLatency/1000).toFixed(1)}s</span></div>}
+                    {model && <div className="flex justify-between"><span>Model</span><span className="font-medium text-foreground truncate max-w-[100px]">{model.name}</span></div>}
+                  </div>
+                </>
+              )}
+
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={() => setShowShortcuts(true)}>
+                <Keyboard className="h-3.5 w-3.5" /> Keyboard shortcuts
+              </DropdownMenuItem>
+              {messages.length > 0 && (
+                <DropdownMenuItem onClick={clearAll} className="text-destructive focus:text-destructive">
+                  <Trash2 className="h-3.5 w-3.5" /> Clear view
+                </DropdownMenuItem>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
+
+          {/* Export menu — visible on md+ as quick affordance when there are messages */}
+          {messages.length > 0 && (
+            <div className="hidden md:block">
+              <ExportMenu
+                messages={messages}
+                modelName={model?.name}
+                systemPrompt={systemPrompt}
+                conversationTitle={convTitle}
+                disabled={messages.length === 0}
+              />
+            </div>
+          )}
         </div>
-      </div>
+
+        {/* Model info strip — desktop only, very subtle */}
+        {model && (
+          <div className="hidden xl:flex items-center justify-center gap-3 px-4 py-1 border-t bg-muted/20 text-[10px] text-muted-foreground">
+            <span className="flex items-center gap-1">
+              <Info className="h-2.5 w-2.5" />
+              {model.context >= 1_000_000 ? `${(model.context/1_000_000).toFixed(1)}M` : `${Math.round(model.context/1000)}K`} ctx
+            </span>
+            <span className="opacity-40">·</span>
+            <span className="flex items-center gap-1"><Zap className="h-2.5 w-2.5 text-amber-500" /> speed {model.speedScore}</span>
+            <span className="opacity-40">·</span>
+            <span className="flex items-center gap-1"><span className="text-amber-500">★</span> bench {model.benchmark}</span>
+            <span className="opacity-40">·</span>
+            <span>{providerName}</span>
+          </div>
+        )}
+      </header>
+
+      {/* ─── Settings sheet ─── */}
+      <Sheet open={showSettings} onOpenChange={setShowSettings}>
+        <SheetContent className="overflow-y-auto">
+          <SheetHeader><SheetTitle>Generation Settings</SheetTitle></SheetHeader>
+          <div className="mt-6">
+            <PlaygroundSettings
+              systemPrompt={systemPrompt}
+              temperature={temperature}
+              maxTokens={maxTokens}
+              topP={topP}
+              frequencyPenalty={frequencyPenalty}
+              presencePenalty={presencePenalty}
+              onChange={(next) => {
+                if (next.systemPrompt !== undefined) setSystemPrompt(next.systemPrompt);
+                if (next.temperature !== undefined) setTemperature(next.temperature);
+                if (next.maxTokens !== undefined) setMaxTokens(next.maxTokens);
+                if (next.topP !== undefined) setTopP(next.topP);
+                if (next.frequencyPenalty !== undefined) setFrequencyPenalty(next.frequencyPenalty);
+                if (next.presencePenalty !== undefined) setPresencePenalty(next.presencePenalty);
+              }}
+            />
+          </div>
+        </SheetContent>
+      </Sheet>
 
       {/* ─── Body ─── */}
       <div className="flex flex-1 min-h-0 overflow-hidden">
-        {/* History rail */}
-        <HistoryRail
-          collapsed={historyCollapsed}
-          onToggleCollapsed={() => setHistoryCollapsed((v) => !v)}
-          currentId={currentConvId}
-          onSelect={(id) => {
-            loadConversation(id);
-            const url = new URL(window.location.href);
-            url.searchParams.set("conv", id);
-            window.history.replaceState({}, "", url.toString());
-          }}
-          onNew={startNewConversation}
-        />
+        {/* Desktop history rail (lg+) */}
+        <div className="hidden lg:block">
+          <HistoryRail
+            collapsed={historyCollapsed}
+            onToggleCollapsed={() => setHistoryCollapsed((v) => !v)}
+            currentId={currentConvId}
+            onSelect={(id) => {
+              loadConversation(id);
+              const url = new URL(window.location.href);
+              url.searchParams.set("conv", id);
+              window.history.replaceState({}, "", url.toString());
+            }}
+            onNew={startNewConversation}
+          />
+        </div>
 
         <div className="flex flex-col flex-1 min-w-0 relative">
-          {/* ─── Chat messages ─── */}
+          {/* ─── Scroll area ─── */}
           <div ref={scrollRef} className="flex-1 overflow-y-auto scroll-smooth">
-            <div className={cn("container", chatMaxWidth)}>
-              {messages.length === 0 ? (
-                <EnhancedEmptyState
-                  modelName={model?.name ?? ""}
-                  providerName={providerName}
-                  onPrompt={(p) => { setInput(p); textareaRef.current?.focus(); }}
-                />
-              ) : (
-                <div className="pb-4">
+            {isEmpty ? (
+              /* Hero composer layout — Claude-style centred input */
+              <div className="min-h-full flex flex-col items-center justify-center px-4 py-10 sm:py-14">
+                {/* Compact greeting */}
+                <div className="text-center mb-8 max-w-xl">
+                  <div className="inline-flex h-14 w-14 rounded-2xl bg-gradient-to-br from-amber-500/20 via-primary/20 to-violet-500/20 items-center justify-center border border-primary/10 shadow-lg shadow-primary/5 mb-4">
+                    <Sparkles className="h-7 w-7 text-amber-500" />
+                  </div>
+                  <h2 className="text-2xl sm:text-3xl font-bold tracking-tight mb-1.5">
+                    What can I help you with?
+                  </h2>
+                  <p className="text-muted-foreground text-sm">
+                    Chatting with <span className="font-semibold text-foreground">{model?.name || "the model"}</span>
+                    {providerName && <> via <span className="font-medium text-foreground">{providerName}</span></>}
+                  </p>
+                </div>
+
+                {/* HERO COMPOSER */}
+                <div className="w-full">{Composer}</div>
+
+                {/* Suggestion grid */}
+                <div className="w-full mt-6">
+                  <EnhancedEmptyState
+                    modelName={model?.name ?? ""}
+                    providerName={providerName}
+                    compact
+                    onPrompt={(p) => { setInput(p); textareaRef.current?.focus(); }}
+                  />
+                </div>
+              </div>
+            ) : (
+              <div className="px-3 sm:px-4 pt-4 pb-6">
+                <div className={cn("mx-auto", showArtifactPane ? "max-w-3xl" : "max-w-3xl")}>
                   {messages.map((m, i) => {
                     const msgArtifacts = artifacts.filter((a) => a.messageId === m.id);
                     const isEditing = editingId === m.id;
@@ -762,14 +1156,12 @@ export default function PlaygroundPage() {
                     return (
                       <div key={m.id} className="group relative">
                         {m.fallback && (
-                          <div className="px-4 pt-3">
-                            <FallbackBanner event={m.fallback} />
-                          </div>
+                          <div className="pt-3"><FallbackBanner event={m.fallback} /></div>
                         )}
 
                         {/* Branch navigator */}
                         {hasBranches && m.convMsgId && (
-                          <div className="px-4 md:px-6 pt-2 -mb-1 flex items-center gap-1.5 text-xs text-muted-foreground">
+                          <div className="pt-2 -mb-1 flex items-center gap-1.5 text-xs text-muted-foreground">
                             <button
                               disabled={siblingIdx <= 0}
                               onClick={() => switchToBranch(m.convMsgId!, siblings[siblingIdx - 1].id)}
@@ -795,7 +1187,7 @@ export default function PlaygroundPage() {
 
                         {/* Edit mode */}
                         {isEditing ? (
-                          <div className="px-4 py-3 flex gap-3">
+                          <div className="py-3 flex gap-3">
                             <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-slate-500 to-slate-700 flex-shrink-0 mt-0.5" />
                             <div className="flex-1">
                               <textarea
@@ -835,7 +1227,7 @@ export default function PlaygroundPage() {
 
                         {/* Inline artifact affordance */}
                         {msgArtifacts.length > 0 && !m.streaming && (
-                          <div className="px-4 md:px-6 -mt-1 pb-3 flex flex-wrap gap-2">
+                          <div className="-mt-1 pb-3 flex flex-wrap gap-2">
                             {msgArtifacts.map((a) => (
                               <button
                                 key={a.id}
@@ -857,12 +1249,12 @@ export default function PlaygroundPage() {
                         )}
 
                         {m.error && !m.streaming && (
-                          <div className="px-4 pb-3">
+                          <div className="pb-3">
                             <StreamError event={m.error} onRetry={() => regenerateLast()} />
                           </div>
                         )}
 
-                        {/* Follow-up suggestions below last assistant message */}
+                        {/* Follow-up suggestions */}
                         {isLastAssistant && !busy && lastUserMsg && (
                           <FollowUpSuggestions
                             lastUserMessage={lastUserMsg.content}
@@ -874,10 +1266,11 @@ export default function PlaygroundPage() {
                           />
                         )}
 
-                        {/* Message action bar — hover reveal */}
+                        {/* Message action bar — hover-reveal on desktop, always visible last assistant on mobile */}
                         {!m.streaming && m.content && !isEditing && (
                           <div className={cn(
-                            "absolute top-3 right-3 opacity-0 group-hover:opacity-100 transition-opacity",
+                            "absolute top-3 right-1 sm:right-2 transition-opacity",
+                            "md:opacity-0 md:group-hover:opacity-100",
                             "flex items-center gap-0.5 bg-background/90 backdrop-blur-sm border rounded-lg p-0.5 shadow-sm",
                           )}>
                             <button
@@ -929,134 +1322,60 @@ export default function PlaygroundPage() {
                     );
                   })}
                 </div>
-              )}
-            </div>
+              </div>
+            )}
           </div>
 
           {/* Scroll to bottom FAB */}
-          {showScrollBtn && (
+          {showScrollBtn && !isEmpty && (
             <button
               onClick={scrollToBottom}
-              className="absolute bottom-36 right-6 z-20 h-9 w-9 rounded-full bg-card border shadow-lg flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-accent transition-all animate-in fade-in zoom-in-95 duration-150"
+              className="absolute bottom-32 sm:bottom-36 right-4 sm:right-6 z-20 h-9 w-9 rounded-full bg-card border shadow-lg flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-accent transition-all animate-in fade-in zoom-in-95 duration-150"
               title="Scroll to bottom"
             >
               <ArrowDown className="h-4 w-4" />
             </button>
           )}
 
-          {/* Conversation stats bar */}
-          <ConversationStats messages={messages} modelName={model?.name} />
-
-          {/* ─── Composer ─── */}
-          <div className="border-t bg-background/95 backdrop-blur-sm">
-            <div className={cn("container py-3", chatMaxWidth)}>
-              <Card className="p-0 shadow-lg ring-1 ring-primary/10 overflow-hidden bg-card">
-                <AttachmentTray
-                  attachments={attachments}
-                  onAdd={(a) => setAttachments((prev) => [...prev, a])}
-                  onRemove={(id) => setAttachments((prev) => prev.filter((x) => x.id !== id))}
-                  disabled={busy}
-                />
-                <Textarea
-                  ref={textareaRef}
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  onPaste={(e) => {
-                    const items = e.clipboardData?.items;
-                    if (!items) return;
-                    for (let i = 0; i < items.length; i++) {
-                      const it = items[i];
-                      if (it.kind === "file" && it.type.startsWith("image/")) {
-                        const f = it.getAsFile();
-                        if (f) {
-                          import("@/lib/attachments").then(({ fileToAttachment }) =>
-                            fileToAttachment(f).then((a) => setAttachments((p) => [...p, a])).catch(() => {})
-                          );
-                        }
-                      }
-                    }
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
-                  }}
-                  placeholder={`Message ${model?.name ?? "the model"}…  (Shift+Enter for newline, ? for shortcuts)`}
-                  className="border-0 resize-none focus-visible:ring-0 min-h-[64px] max-h-[200px] rounded-none text-sm"
-                />
-                <div className="flex items-center gap-2 px-3 pb-2 pt-1">
-                  {/* Left side: provider info + token budget */}
-                  <div className="flex items-center gap-3 text-xs text-muted-foreground flex-1 min-w-0">
-                    <span className="flex items-center gap-1 flex-shrink-0">
-                      <Zap className="h-3 w-3 text-amber-500" />
-                      <span className="hidden sm:inline truncate max-w-[80px]">{providerName}</span>
-                    </span>
-                    <span className="hidden md:flex items-center gap-1">
-                      <Clock className="h-3 w-3" />
-                      {tokenEstimate.toLocaleString()} tok
-                    </span>
-                    {model && (
-                      <div className="hidden lg:block flex-1 max-w-[140px]">
-                        <TokenBudgetBar used={tokenEstimate} total={model.context} />
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Right side: voice + actions */}
-                  <div className="flex items-center gap-1">
-                    <VoiceInputButton
-                      onTranscript={(t) => setInput((prev) => prev ? prev + " " + t : t)}
-                      disabled={busy}
-                    />
-                    {busy ? (
-                      <Button size="sm" variant="destructive" onClick={stop} className="gap-1.5 h-8">
-                        <Square className="h-3.5 w-3.5" /> Stop
-                      </Button>
-                    ) : (
-                      <>
-                        {messages.length > 0 && messages[messages.length - 1].role === "assistant" && messages[messages.length - 1].content && !input.trim() && (
-                          <Button size="sm" variant="outline" onClick={continueLast} className="gap-1.5 h-8">
-                            <Play className="h-3.5 w-3.5" /> Continue
-                          </Button>
-                        )}
-                        <Button
-                          size="sm"
-                          onClick={() => send()}
-                          disabled={!input.trim() || !model}
-                          className="gap-1.5 h-8 px-3"
-                        >
-                          <Send className="h-3.5 w-3.5" /> Send
-                        </Button>
-                      </>
-                    )}
-                  </div>
-                </div>
-              </Card>
-
-              <div className="flex items-center justify-between mt-1.5 px-1">
-                <p className="text-[10px] text-muted-foreground/50">
-                  Enter to send · Shift+Enter for newline · ? for shortcuts
-                </p>
-                {responseFormat !== "markdown" && (
-                  <Badge variant="outline" className="text-[10px] h-4">
-                    {responseFormat === "plain" ? "Plain text mode" : "JSON mode"}
-                  </Badge>
-                )}
+          {/* Ultra-Think phase indicator */}
+          {ultraPhase && (
+            <div className="px-3 sm:px-4 pt-2">
+              <div className="mx-auto max-w-3xl flex items-center gap-2 text-[11px] text-violet-700 dark:text-violet-300 bg-violet-500/10 border border-violet-500/30 rounded-lg px-3 py-1.5">
+                <span className="relative flex h-2 w-2">
+                  <span className="absolute inset-0 rounded-full bg-violet-500 animate-ping opacity-75" />
+                  <span className="relative inline-flex h-2 w-2 rounded-full bg-violet-500" />
+                </span>
+                <span className="font-medium capitalize">{ultraPhase} phase</span>
+                <span className="opacity-70">
+                  {ultraPhase === "plan" && "— mapping the deliverable…"}
+                  {ultraPhase === "build" && "— writing the polished version…"}
+                  {ultraPhase === "critique" && "— reviewing for improvements…"}
+                  {ultraPhase === "polish" && "— applying final polish…"}
+                </span>
               </div>
             </div>
-          </div>
-        </div>{/* /chat column */}
+          )}
+
+          {/* ─── Sticky composer (only when chat has messages) ─── */}
+          {!isEmpty && (
+            <div className="border-t bg-gradient-to-t from-background via-background/95 to-background/70 backdrop-blur-sm px-3 sm:px-4 pt-3 pb-3 sm:pb-4">
+              {Composer}
+            </div>
+          )}
+        </div>
 
         {/* ─── Artifact panel ─── */}
         {showArtifactPane && activeArtifact && (
-          <aside className="flex flex-col fixed inset-0 z-40 bg-background md:static md:inset-auto md:z-auto md:w-[42%] md:min-w-[400px] md:max-w-[640px] xl:max-w-[760px]">
+          <aside className="flex flex-col fixed inset-0 z-40 bg-background md:static md:inset-auto md:z-auto md:w-[42%] md:min-w-[400px] md:max-w-[640px] xl:max-w-[760px] border-l">
             <ArtifactPanel
               artifact={activeArtifact}
               onClose={() => openArtifact(null)}
             />
           </aside>
         )}
-      </div>{/* /body row */}
+      </div>
 
-      {/* ─── Keyboard shortcuts overlay ─── */}
+      {/* Keyboard shortcuts overlay */}
       <KeyboardShortcutsPanel
         open={showShortcuts}
         onClose={() => setShowShortcuts(false)}
@@ -1071,7 +1390,7 @@ function buildApiMessages(
   systemPrompt: string,
   attachments: Attachment[] | undefined,
   project: { systemPrompt: string; files: Array<{ name: string; extractedText: string }> } | null | undefined,
-): Array<{ role: string; content: string }> {
+): Array<{ role: "system" | "user" | "assistant"; content: string }> {
   let system = systemPrompt;
   if (project) {
     const knowledge = project.files
@@ -1079,7 +1398,7 @@ function buildApiMessages(
       .join("\n\n");
     if (knowledge) system += `\n\nProject knowledge:\n${knowledge}`;
   }
-  const msgs: Array<{ role: string; content: string }> = [{ role: "system", content: system }];
+  const msgs: Array<{ role: "system" | "user" | "assistant"; content: string }> = [{ role: "system", content: system }];
   for (let i = 0; i < history.length; i++) {
     const m = history[i];
     const isLastUser = i === history.length - 1 && m.role === "user";

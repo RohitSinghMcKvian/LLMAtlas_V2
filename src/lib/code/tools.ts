@@ -198,7 +198,13 @@ export function previewMutation(workspaceId: string, call: ToolCall): PendingMut
   if (call.name === "run_bash") {
     return { callId: call.id, toolName: call.name, before: "", command: call.args.command as string };
   }
-  return null;
+  // Generic command-style preview for any other approval-gated tool (git, MCP,
+  // web tools, …). Without this the approval card has no content to render and
+  // the loop would deadlock waiting on an approval the user can't see.
+  const argStr = (() => {
+    try { return JSON.stringify(call.args ?? {}); } catch { return "{…}"; }
+  })();
+  return { callId: call.id, toolName: call.name, before: "", command: `${call.name}(${argStr})` };
 }
 
 /** Unified diff between two strings — basic LCS-free implementation good enough for UI display. */

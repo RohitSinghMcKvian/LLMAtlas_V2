@@ -18,18 +18,21 @@ type DiffMode = "unified" | "split";
 export function DiffViewer({ mutation, onApprove, onReject, onAutoApprove }: Props) {
   const [collapsed, setCollapsed] = useState(false);
   const [diffMode, setDiffMode] = useState<DiffMode>("unified");
-  const Icon = mutation.toolName === "run_bash" ? TermIcon : mutation.toolName === "delete_file" ? Trash2 : FileCode2;
+  // Command-style preview for run_bash, git, MCP, and other external/action
+  // tools (anything that carries a `command` string rather than a file diff).
+  const isCommandStyle = mutation.command != null;
+  const Icon = isCommandStyle ? TermIcon : mutation.toolName === "delete_file" ? Trash2 : FileCode2;
 
   const diffText = useMemo(() => {
-    if (mutation.toolName === "run_bash") return mutation.command ?? "";
+    if (isCommandStyle) return mutation.command ?? "";
     if (mutation.toolName === "delete_file") return mutation.before;
     return makeUnifiedDiff(mutation.before, mutation.after ?? "", mutation.path ?? "file");
-  }, [mutation]);
+  }, [mutation, isCommandStyle]);
 
   const lines = diffText.split("\n");
   const addCount = lines.filter((l) => l.startsWith("+") && !l.startsWith("+++")).length;
   const delCount = lines.filter((l) => l.startsWith("-") && !l.startsWith("---")).length;
-  const isFileDiff = mutation.toolName !== "run_bash";
+  const isFileDiff = !isCommandStyle;
 
   const splitPairs = useMemo(() => {
     if (!isFileDiff || diffMode !== "split") return [];

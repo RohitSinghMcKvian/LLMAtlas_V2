@@ -38,6 +38,7 @@ export default function CodePage() {
   const setActive = useWorkspaceStore((s) => s.setActive);
 
   const [showTemplates, setShowTemplates] = useState(false);
+  const [hydrated, setHydrated] = useState(false);
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -47,15 +48,26 @@ export default function CodePage() {
 
   const current = workspaces.find((w) => w.id === currentId) ?? workspaces[0] ?? null;
 
+  // Zustand's persist middleware rehydrates from localStorage *after* the first
+  // render, so on mount `workspaces` is momentarily empty even for a returning
+  // user. Wait for hydration before deciding anything — otherwise the first-run
+  // effect below latches the template picker open and never reopens the IDE.
+  useEffect(() => {
+    if (useWorkspaceStore.persist.hasHydrated()) setHydrated(true);
+    const unsub = useWorkspaceStore.persist.onFinishHydration(() => setHydrated(true));
+    return unsub;
+  }, []);
+
   // Auto-select first workspace if nothing is current.
   useEffect(() => {
     if (!currentId && workspaces.length > 0) setCurrent(workspaces[0].id);
   }, [currentId, workspaces, setCurrent]);
 
-  // First-run: show template picker.
+  // First-run: show the template picker only once we know the store is empty
+  // *after* hydration (a genuine first run), not during the pre-hydration flash.
   useEffect(() => {
-    if (workspaces.length === 0) setShowTemplates(true);
-  }, [workspaces.length]);
+    if (hydrated && workspaces.length === 0) setShowTemplates(true);
+  }, [hydrated, workspaces.length]);
 
   function createFromTemplate(idx: number) {
     const t = WORKSPACE_TEMPLATES[idx];
@@ -63,6 +75,16 @@ export default function CodePage() {
     setCurrent(w.id);
     setShowTemplates(false);
     toast.success(`Created workspace “${t.name}”`);
+  }
+
+  // Until the persisted store has hydrated we can't tell a first-run user from a
+  // returning one — render a neutral placeholder instead of flashing the picker.
+  if (!hydrated) {
+    return (
+      <div className="flex items-center justify-center h-full text-xs text-muted-foreground">
+        Loading workspace…
+      </div>
+    );
   }
 
   if (showTemplates || !current) {

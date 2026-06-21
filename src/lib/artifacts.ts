@@ -29,6 +29,34 @@ const LANGUAGE_TO_KIND: Record<string, ArtifactKind> = {
   markdown: "markdown",
   jsx: "react",
   tsx: "react",
+  // Ultra-Capability Layer artifact tags
+  pdf: "pdf",
+  chart: "chart",
+  chartjs: "chart",
+  "chart-js": "chart",
+  vega: "chart",
+  "vega-lite": "chart",
+  vegalite: "chart",
+  plotly: "chart",
+  three: "three",
+  threejs: "three",
+  "three-js": "three",
+  webgl: "three",
+  audio: "audio",
+  tone: "audio",
+  tonejs: "audio",
+  music: "audio",
+  map: "map",
+  leaflet: "map",
+  geojson: "map",
+  spreadsheet: "spreadsheet",
+  xlsx: "spreadsheet",
+  excel: "spreadsheet",
+  csv: "spreadsheet",
+  mindmap: "mindmap",
+  markmap: "mindmap",
+  whiteboard: "whiteboard",
+  excalidraw: "whiteboard",
 };
 
 export function detectArtifacts(content: string): ArtifactDetection[] {
@@ -86,16 +114,16 @@ export function detectArtifacts(content: string): ArtifactDetection[] {
   return out;
 }
 
+const ARTIFACT_KINDS = new Set<ArtifactKind>([
+  "html", "react", "svg", "mermaid", "markdown", "code",
+  "pdf", "chart", "three", "audio", "map", "spreadsheet", "mindmap", "whiteboard",
+]);
+
 function resolveKind(declaredKind: string, lang: string): ArtifactKind {
-  return (
-    declaredKind in LANGUAGE_TO_KIND
-      ? LANGUAGE_TO_KIND[declaredKind]
-      : declaredKind === "react" || declaredKind === "html" || declaredKind === "svg" || declaredKind === "mermaid" || declaredKind === "markdown" || declaredKind === "code"
-      ? declaredKind
-      : lang in LANGUAGE_TO_KIND
-      ? LANGUAGE_TO_KIND[lang]
-      : "code"
-  ) as ArtifactKind;
+  if (ARTIFACT_KINDS.has(declaredKind as ArtifactKind)) return declaredKind as ArtifactKind;
+  if (declaredKind in LANGUAGE_TO_KIND) return LANGUAGE_TO_KIND[declaredKind];
+  if (lang in LANGUAGE_TO_KIND) return LANGUAGE_TO_KIND[lang];
+  return "code";
 }
 
 /**
@@ -210,5 +238,13 @@ function titleForKind(kind: ArtifactKind, lang: string): string {
     case "markdown": return "Markdown document";
     case "react": return "React component";
     case "code": return lang ? `${lang} snippet` : "Code snippet";
+    case "pdf": return "PDF document";
+    case "chart": return "Chart";
+    case "three": return "3D scene";
+    case "audio": return "Audio composition";
+    case "map": return "Map";
+    case "spreadsheet": return "Spreadsheet";
+    case "mindmap": return "Mind map";
+    case "whiteboard": return "Whiteboard";
   }
 }
