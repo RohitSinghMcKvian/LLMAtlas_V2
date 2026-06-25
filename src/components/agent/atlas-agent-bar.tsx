@@ -266,7 +266,7 @@ export function AtlasAgentBar() {
       <AnimatePresence>
         {!open && (
           <motion.div
-            className="fixed bottom-6 right-0 z-[60]"
+            className="fixed bottom-20 right-0 z-[60]"
             initial={{ opacity: 0, x: 60 }}
             animate={{ opacity: 1, x: 0 }}
             exit={{ opacity: 0, x: 60 }}

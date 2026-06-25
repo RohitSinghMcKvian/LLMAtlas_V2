@@ -906,9 +906,9 @@ export default function PlaygroundPage() {
           {/* Persona */}
           {PersonaPill}
 
-          {/* Model picker — flex-1 so it gets the breathing room */}
-          <div className="flex-1 min-w-0 flex justify-start">
-            <ModelPicker value={modelId} onChange={setModelId} />
+          {/* Model picker — flex-1 so it gets the breathing room, max-w prevents overflow on mobile */}
+          <div className="flex-1 min-w-0 flex justify-start max-w-[50%] sm:max-w-none">
+            <ModelPicker value={modelId} onChange={setModelId} className="max-w-full" />
           </div>
 
           {/* UltraModeToggle — surfaced at ALL sizes (icon-only on mobile via its

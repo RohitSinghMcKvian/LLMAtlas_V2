@@ -91,13 +91,22 @@ export function VoiceInputButton({ onTranscript, disabled }: Props) {
       }
     };
     recognition.onerror = (e: SpeechRecognitionErrorEvent) => {
-      if (e.error !== "aborted") toast.error(`Microphone error: ${e.error}`);
+      if (e.error === "not-allowed") {
+        toast.error("Microphone access denied. Please allow microphone permission in your browser settings, then try again.");
+      } else if (e.error !== "aborted") {
+        toast.error(`Microphone error: ${e.error}`);
+      }
       setState("idle");
     };
     recognition.onend = () => setState("idle");
 
     recognitionRef.current = recognition;
-    recognition.start();
+    try {
+      recognition.start();
+    } catch {
+      toast.error("Could not start voice input. Check microphone permissions in your browser.");
+      setState("idle");
+    }
   }, [state, supported, onTranscript]);
 
   if (!supported) return null;

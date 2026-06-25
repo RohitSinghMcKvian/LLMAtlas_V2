@@ -293,8 +293,27 @@ export function buildReactSrcdoc(rawSource: string): string {
   const importMap = JSON.stringify({ imports: buildImportMap(source) });
   const moduleSource = composeModule(source).replace(/<\/script>/gi, "<\\/script>");
 
-  // 5. Serialise the enrichErrorMessage helper for inline use in the srcdoc.
-  const enrichFn = enrichErrorMessage.toString();
+  // 5. Build the enrichErrorMessage helper as a plain JS string so it survives
+  //    bundler minification (`.toString()` on a TS function gets mangled).
+  const enrichFnSource = `
+  var __ICON_PREFIXES = ${JSON.stringify(REACT_ICONS_PREFIX)};
+  function enrichErrorMessage(raw) {
+    var m = /The requested module ['"]([^'"]+)['"]\s+does not provide an export named ['"]([^'"]+)['"]/i.exec(raw);
+    if (m) {
+      var fromPkg = m[1], exportName = m[2], suggested = null;
+      for (var i = 0; i < __ICON_PREFIXES.length; i++) {
+        var prefix = __ICON_PREFIXES[i][0], pkg = __ICON_PREFIXES[i][1];
+        if (exportName.indexOf(prefix) === 0 && exportName.length > prefix.length && exportName[prefix.length] === exportName[prefix.length].toUpperCase()) {
+          suggested = pkg; break;
+        }
+      }
+      if (suggested) {
+        return raw + "\\n\\n\\ud83d\\udca1 Hint: \\"" + exportName + "\\" is a " + suggested + " icon, not a " + fromPkg + " icon.\\nFix the import:\\n  import { " + exportName + " } from '" + suggested + "'";
+      }
+      return raw + "\\n\\n\\ud83d\\udca1 Hint: \\"" + exportName + "\\" is not exported by \\"" + fromPkg + "\\".\\nCheck the package docs or ask the model to fix the import.";
+    }
+    return raw;
+  }`;
 
   return `<!doctype html>
 <html lang="en">
@@ -314,7 +333,7 @@ ${CONSOLE_BRIDGE}
 (async () => {
   const root = document.getElementById("root");
   const esc = (s) => String(s).replace(/[&<>]/g,(c)=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
-  ${enrichFn}
+  ${enrichFnSource}
   function showError(e){
     const raw = (e && (e.stack || e.message)) || String(e);
     const text = enrichErrorMessage(raw);

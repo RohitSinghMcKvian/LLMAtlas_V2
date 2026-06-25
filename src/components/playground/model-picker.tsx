@@ -119,12 +119,12 @@ export function ModelPicker({ value, onChange, className }: Props) {
           <span className="truncate flex-1 text-left">{current?.name ?? "Pick a model"}</span>
           {current?.free && (
             current.tags?.includes("frontier-free")
-              ? <Badge variant="frontier-free" className="text-[10px] px-1.5 py-0">FRONTIER FREE</Badge>
-              : <Badge variant="success" className="text-[10px] px-1.5 py-0">FREE</Badge>
+              ? <Badge variant="frontier-free" className="hidden sm:inline-flex text-[10px] px-1.5 py-0">FRONTIER FREE</Badge>
+              : <Badge variant="success" className="hidden sm:inline-flex text-[10px] px-1.5 py-0">FREE</Badge>
           )}
-          {NEW_IDS.has(current?.id ?? "") && <Badge variant="outline" className="text-[10px] px-1.5 py-0 border-amber-400 text-amber-500">NEW</Badge>}
+          {NEW_IDS.has(current?.id ?? "") && <Badge variant="outline" className="hidden sm:inline-flex text-[10px] px-1.5 py-0 border-amber-400 text-amber-500">NEW</Badge>}
           {current && requiresApiKey(current) && (
-            <span title="Requires API key (BYOK)" className="flex items-center flex-shrink-0">
+            <span title="Requires API key (BYOK)" className="hidden sm:flex items-center flex-shrink-0">
               <KeyRound className="h-3 w-3 text-muted-foreground/60" />
             </span>
           )}

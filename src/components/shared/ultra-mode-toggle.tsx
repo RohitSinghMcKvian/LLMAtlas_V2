@@ -74,8 +74,8 @@ export function UltraModeToggle({
         </button>
         {modeOpen && (
           <>
-            <div className="fixed inset-0 z-30" onClick={() => setModeOpen(false)} />
-            <div className="fixed inset-x-3 top-[60px] z-40 bg-popover border rounded-xl shadow-xl p-1 max-h-[70vh] overflow-y-auto animate-in fade-in slide-in-from-top-1 duration-150 sm:absolute sm:inset-x-auto sm:top-full sm:right-0 sm:mt-1.5 sm:w-[20rem]">
+            <div className="fixed inset-0 z-[65] sm:z-30" onClick={() => setModeOpen(false)} />
+            <div className="fixed inset-x-3 top-[62px] z-[70] bg-popover border rounded-xl shadow-2xl p-1 max-h-[70vh] overflow-y-auto animate-in fade-in slide-in-from-top-1 duration-150 sm:absolute sm:inset-x-auto sm:top-full sm:right-0 sm:mt-1.5 sm:w-[20rem] sm:z-40">
               <p className="px-3 py-1.5 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
                 Ultra-Think Mode
               </p>
@@ -135,8 +135,8 @@ export function UltraModeToggle({
         </button>
         {capOpen && (
           <>
-            <div className="fixed inset-0 z-30" onClick={() => setCapOpen(false)} />
-            <div className="fixed inset-x-3 top-[60px] z-40 bg-popover border rounded-xl shadow-xl p-1 max-h-[70vh] overflow-y-auto animate-in fade-in slide-in-from-top-1 duration-150 sm:absolute sm:inset-x-auto sm:top-full sm:right-0 sm:mt-1.5 sm:w-[22rem]">
+            <div className="fixed inset-0 z-[65] sm:z-30" onClick={() => setCapOpen(false)} />
+            <div className="fixed inset-x-3 top-[62px] z-[70] bg-popover border rounded-xl shadow-2xl p-1 max-h-[70vh] overflow-y-auto animate-in fade-in slide-in-from-top-1 duration-150 sm:absolute sm:inset-x-auto sm:top-full sm:right-0 sm:mt-1.5 sm:w-[22rem] sm:z-40">
               <div className="flex items-center justify-between px-3 py-1.5">
                 <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
                   Creator Capabilities
